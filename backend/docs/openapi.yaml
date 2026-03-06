@@ -1,0 +1,176 @@
+openapi: 3.0.3
+info:
+  title: Fresh Mandi API
+  version: 1.0.0
+servers:
+  - url: http://localhost:4000/api/v1
+paths:
+  /auth/otp/request:
+    post:
+      summary: Request OTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string, example: "9876543210" }
+      responses:
+        '200': { description: OTP sent }
+  /auth/otp/verify:
+    post:
+      summary: Verify OTP and get JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, otp]
+              properties:
+                phone: { type: string }
+                otp: { type: string, example: "123456" }
+      responses:
+        '200': { description: Authenticated }
+  /catalog/categories:
+    get:
+      summary: Get categories
+      responses:
+        '200': { description: Category list }
+  /catalog/products:
+    get:
+      summary: Get products with optional filters
+      parameters:
+        - in: query
+          name: categoryId
+          schema: { type: integer }
+        - in: query
+          name: subcategory
+          schema: { type: string }
+        - in: query
+          name: q
+          schema: { type: string }
+      responses:
+        '200': { description: Product list }
+  /cart:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Get cart items
+      responses:
+        '200': { description: Cart data }
+  /cart/items:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Add/update cart item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [product_id, quantity]
+              properties:
+                product_id: { type: integer }
+                quantity: { type: integer }
+      responses:
+        '200': { description: Item upserted }
+  /orders:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Create order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address_id, slot_id, payment_mode]
+              properties:
+                address_id: { type: integer }
+                slot_id: { type: integer }
+                payment_mode: { type: string, enum: [COD, UPI] }
+                coupon_code: { type: string }
+                wallet_redeem: { type: number }
+      responses:
+        '200': { description: Order created (or pending payment for UPI) }
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Order history
+      responses:
+        '200': { description: Orders list }
+  /orders/{id}:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Order details
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: integer }
+      responses:
+        '200': { description: Order with items }
+  /wallet:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Wallet balance and transactions
+      responses:
+        '200': { description: Wallet summary }
+  /slots:
+    get:
+      security: [{ bearerAuth: [] }]
+      summary: Delivery slots
+      responses:
+        '200': { description: Slot list }
+  /notifications/fcm-token:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Register FCM token
+      responses:
+        '200': { description: Token stored }
+  /payments/create-intent:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Create payment intent for an order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_id, amount, provider]
+              properties:
+                order_id: { type: integer }
+                amount: { type: number }
+                provider: { type: string, enum: [RAZORPAY, STRIPE] }
+      responses:
+        '200': { description: Payment intent created }
+  /payments/confirm:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Confirm payment outcome
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference, order_id, status]
+              properties:
+                reference: { type: string }
+                order_id: { type: integer }
+                status: { type: string, enum: [SUCCESS, FAILED] }
+      responses:
+        '200': { description: Payment updated }
+  /admin/jobs/night-reminder:
+    post:
+      summary: Queue nightly reminder notifications
+      responses:
+        '200': { description: Night reminders queued }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

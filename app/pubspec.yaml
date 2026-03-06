@@ -1,0 +1,53 @@
+name: fresh_mandi_app
+description: Fresh Mandi grocery pre-order app
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.7
+  dio: ^5.7.0
+  pretty_dio_logger: ^1.4.0
+  flutter_secure_storage: ^9.2.2
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  intl: ^0.19.0
+  flutter_local_notifications: ^18.0.1
+  firebase_core: ^3.8.0
+  firebase_messaging: ^15.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.14.3
+  flutter_native_splash: ^2.4.4
+
+dependency_overrides:
+  path_provider_foundation: 2.5.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
+    - assets/icon/app_icon.png
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/icon/app_icon.png
+  image_path_ios: assets/icon/app_icon.png
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: assets/icon/app_icon.png
+  remove_alpha_ios: false
+
+flutter_native_splash:
+  color: "#FFFFFF"
+  android_12:
+    color: "#FFFFFF"

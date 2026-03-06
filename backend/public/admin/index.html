@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fresh Mandi Admin</title>
+    <link rel="icon" type="image/png" href="./brand-logo.png" />
+    <link rel="apple-touch-icon" href="./brand-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="loginView" class="center-wrap">
+      <form id="loginForm" class="card login-card">
+        <img src="./brand-logo.png" alt="Fresh Mandi logo" class="brand-logo login-logo" />
+        <h1>Fresh Mandi Admin</h1>
+        <p>Manage products, orders, and app settings.</p>
+        <label>Email</label>
+        <input id="loginEmail" type="email" value="admin@freshmandi.local" required />
+        <label>Password</label>
+        <input id="loginPassword" type="password" value="Admin@123" required />
+        <button type="submit" class="btn btn-primary">Login</button>
+        <div id="loginError" class="error"></div>
+      </form>
+    </div>
+
+    <div id="appView" class="hidden app-shell">
+      <div class="main-wrap">
+        <header class="topbar">
+          <div class="topbar-main">
+            <div class="brand-inline">
+              <img src="./brand-logo.png" alt="Fresh Mandi logo" class="brand-logo topbar-logo" />
+              <h1>Fresh Mandi</h1>
+              <small>Admin Console</small>
+            </div>
+            <div class="topbar-title-wrap">
+              <h2 id="viewTitle">Dashboard</h2>
+              <small id="adminMeta"></small>
+            </div>
+            <button id="logoutBtn" class="btn btn-outline logout-top">Logout</button>
+          </div>
+          <div class="top-nav">
+            <button class="nav-btn active" data-view="dashboardView">Dashboard</button>
+            <button class="nav-btn" data-view="productsView">Products</button>
+            <button class="nav-btn" data-view="ordersView">Orders</button>
+            <button class="nav-btn" data-view="settingsView">Settings</button>
+          </div>
+        </header>
+
+        <main>
+          <section id="dashboardView" class="view card">
+            <h3>Business Snapshot</h3>
+            <div id="kpis" class="kpi-grid"></div>
+            <div id="chart" class="chart"></div>
+          </section>
+
+          <section id="productsView" class="view card hidden">
+            <div class="view-head">
+              <h3>Products</h3>
+              <div class="toolbar">
+                <input id="productSearch" placeholder="Search product" />
+                <button id="refreshProducts" class="btn btn-outline">Refresh</button>
+                <button id="openCreateProduct" class="btn btn-primary">+ Add Product</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Price</th>
+                    <th>Unit</th>
+                    <th>Stock</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="productsBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="ordersView" class="view card hidden">
+            <div class="view-head orders-head">
+              <h3>Orders</h3>
+              <div class="toolbar orders-toolbar">
+                <div class="filter-stack">
+                  <small>Quick Date</small>
+                  <select id="orderDateQuick">
+                    <option value="all">All Dates</option>
+                    <option value="today">Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="range">Custom Range</option>
+                  </select>
+                </div>
+                <div class="filter-stack">
+                  <small>Date Range</small>
+                  <div class="filter-inline">
+                    <span>From</span>
+                    <input id="orderDateFrom" type="date" title="From date" aria-label="From date" />
+                    <span>To</span>
+                    <input id="orderDateTo" type="date" title="To date" aria-label="To date" />
+                  </div>
+                </div>
+                <div class="filter-stack">
+                  <small>Sort</small>
+                  <select id="orderSort">
+                    <option value="latest">Latest First</option>
+                    <option value="oldest">Oldest First</option>
+                  </select>
+                </div>
+                <div class="filter-stack">
+                  <small>Status</small>
+                  <select id="orderStatusFilter">
+                    <option value="">All Status</option>
+                    <option value="PENDING_PAYMENT">PENDING_PAYMENT</option>
+                    <option value="CONFIRMED">CONFIRMED</option>
+                    <option value="PACKED">PACKED</option>
+                    <option value="OUT_FOR_DELIVERY">OUT_FOR_DELIVERY</option>
+                    <option value="DELIVERED">DELIVERED</option>
+                    <option value="CANCELLED">CANCELLED</option>
+                  </select>
+                </div>
+                <button id="refreshOrders" class="btn btn-outline">Refresh</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Date</th>
+                    <th>Customer</th>
+                    <th>Phone</th>
+                    <th>Total</th>
+                    <th>Status</th>
+                    <th>Slot</th>
+                    <th>Address</th>
+                  </tr>
+                </thead>
+                <tbody id="ordersBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="settingsView" class="view card hidden">
+            <h3>App Settings</h3>
+            <form id="settingsForm" class="form-grid two-col">
+              <div>
+                <label>Cutoff Hour (24h)</label>
+                <input id="cutoffHour" type="number" min="0" max="23" />
+              </div>
+              <div>
+                <label>GST Percent</label>
+                <input id="gstPercent" type="number" min="0" max="100" />
+              </div>
+              <div class="row-actions span-2">
+                <button type="submit" class="btn btn-primary">Save Settings</button>
+                <button type="button" id="nightReminderBtn" class="btn btn-outline">Send Night Reminder Job</button>
+              </div>
+            </form>
+            <div id="settingsMsg" class="info"></div>
+          </section>
+
+          <section id="productFormView" class="view card hidden">
+            <div class="view-head">
+              <div>
+                <h3 id="productFormTitle">Add Product</h3>
+                <p class="muted">Create or update product details and media.</p>
+              </div>
+              <button id="backToProducts" class="btn btn-outline">Back to Products</button>
+            </div>
+            <form id="productForm" class="form-grid two-col">
+              <input type="hidden" id="productId" />
+
+              <div>
+                <label>Category</label>
+                <select id="categoryId" required></select>
+              </div>
+              <div>
+                <label>Subcategory</label>
+                <select id="productSubcategory">
+                  <option value="">None</option>
+                  <option value="Seasonal">Seasonal</option>
+                  <option value="Out of Season">Out of Season</option>
+                </select>
+              </div>
+
+              <div>
+                <label>Name</label>
+                <input id="productName" required />
+              </div>
+              <div>
+                <label>Unit</label>
+                <input id="productUnit" placeholder="1 kg" required />
+              </div>
+
+              <div>
+                <label>Price</label>
+                <input id="productPrice" type="number" min="1" step="0.01" required />
+              </div>
+              <div>
+                <label>In stock</label>
+                <select id="productStock">
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </div>
+
+              <input id="productImage" type="hidden" />
+              <div>
+                <label>Upload Image</label>
+                <input id="productImageFile" type="file" accept="image/png,image/jpeg,image/webp" />
+                <small id="productImageMeta" class="muted">No image uploaded yet.</small>
+              </div>
+              <div>
+                <label>Preview</label>
+                <img id="productImagePreview" class="img-preview hidden" alt="preview" />
+              </div>
+
+              <div class="row-actions span-2">
+                <button id="saveProductBtn" type="submit" class="btn btn-primary">Save Product</button>
+                <button type="button" id="productReset" class="btn btn-outline">Clear</button>
+              </div>
+            </form>
+            <div id="productFormMsg" class="info"></div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

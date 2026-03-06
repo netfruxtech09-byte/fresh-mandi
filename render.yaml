@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: fresh-mandi-api
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm ci
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DATABASE_URL
+        fromDatabase:
+          name: fresh-mandi-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OTP_BYPASS
+        value: true
+      - key: OTP_BYPASS_CODE
+        value: 123456
+      - key: OTP_FALLBACK_ON_SMS_FAILURE
+        value: true
+      - key: SMS_PROVIDER
+        value: textbelt
+      - key: SMS_TEXTBELT_KEY
+        value: textbelt
+      - key: CUT_OFF_HOUR
+        value: 21
+      - key: GST_PERCENT
+        value: 5
+      - key: PAYMENT_BYPASS
+        value: true
+
+databases:
+  - name: fresh-mandi-postgres
+    plan: free

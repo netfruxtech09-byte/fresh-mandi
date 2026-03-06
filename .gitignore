@@ -1,0 +1,22 @@
+# Flutter
+app/.dart_tool/
+app/.packages
+app/build/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.pub-cache/
+app/.pub/
+app/android/.gradle/
+app/android/local.properties
+app/ios/Pods/
+app/ios/.symlinks/
+
+# Node
+backend/node_modules/
+backend/dist/
+backend/.env
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
