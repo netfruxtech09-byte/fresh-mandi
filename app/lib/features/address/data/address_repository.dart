@@ -25,6 +25,8 @@ class AddressRepository {
     required String city,
     required String state,
     required String pincode,
+    required int sectorId,
+    int? buildingId,
     required bool isDefault,
   }) async {
     await _dio.post('/addresses', data: {
@@ -33,6 +35,8 @@ class AddressRepository {
       'city': city,
       'state': state,
       'pincode': pincode,
+      'sector_id': sectorId,
+      'building_id': buildingId,
       'is_default': isDefault,
     });
   }
@@ -44,6 +48,8 @@ class AddressRepository {
     required String city,
     required String state,
     required String pincode,
+    required int sectorId,
+    int? buildingId,
     required bool isDefault,
   }) async {
     await _dio.put('/addresses/$id', data: {
@@ -52,8 +58,42 @@ class AddressRepository {
       'city': city,
       'state': state,
       'pincode': pincode,
+      'sector_id': sectorId,
+      'building_id': buildingId,
       'is_default': isDefault,
     });
+  }
+
+  Future<List<Map<String, dynamic>>> fetchSectors() async {
+    final res = await _dio.get('/catalog/sectors');
+    return ((res.data['data'] as List<dynamic>?) ?? [])
+        .cast<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
+  }
+
+  Future<List<Map<String, dynamic>>> fetchBuildings(
+      {required int sectorId}) async {
+    final res = await _dio
+        .get('/catalog/buildings', queryParameters: {'sector_id': sectorId});
+    return ((res.data['data'] as List<dynamic>?) ?? [])
+        .cast<Map>()
+        .map((e) => e.cast<String, dynamic>())
+        .toList();
+  }
+
+  Future<Map<String, dynamic>> fetchServiceability() async {
+    final res = await _dio.get('/catalog/serviceability');
+    final data = res.data['data'];
+    if (data is Map) {
+      return data.cast<String, dynamic>();
+    }
+    return const {
+      'city': 'Mohali',
+      'state': 'Punjab',
+      'cities': ['Mohali'],
+      'pincodes': <String>[],
+    };
   }
 
   Future<void> deleteAddress(int id) async {

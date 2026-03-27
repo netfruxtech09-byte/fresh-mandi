@@ -47,6 +47,66 @@ orderRouter.post('/', async (req, res) => {
       return fail(res, 400, 'Cart is empty');
     }
 
+    const address = await client.query(
+      `SELECT id, sector_id, building_id
+       FROM addresses
+       WHERE id = $1 AND user_id = $2`,
+      [address_id, req.user.sub],
+    );
+    if (!address.rowCount) {
+      await client.query('ROLLBACK');
+      return fail(res, 404, 'Address not found');
+    }
+
+    const addressRow = address.rows[0];
+    if (!addressRow.sector_id) {
+      await client.query('ROLLBACK');
+      return fail(res, 400, 'Address sector is not set. Please edit address and select sector.');
+    }
+
+    let routeId = null;
+    if (addressRow.building_id) {
+      const mappedRoute = await client.query(
+        `SELECT r.id
+         FROM route_buildings rb
+         JOIN routes r ON r.id = rb.route_id
+         WHERE rb.building_id = $1
+           AND r.sector_id = $2
+           AND r.active = true
+         ORDER BY rb.stop_sequence ASC, r.id ASC
+         LIMIT 1`,
+        [addressRow.building_id, addressRow.sector_id],
+      );
+      routeId = mappedRoute.rows[0]?.id ?? null;
+    }
+
+    if (!routeId) {
+      const fallbackRoute = await client.query(
+        `SELECT id
+         FROM routes
+         WHERE sector_id = $1
+           AND active = true
+         ORDER BY id ASC
+         LIMIT 1`,
+        [addressRow.sector_id],
+      );
+      routeId = fallbackRoute.rows[0]?.id ?? null;
+    }
+
+    if (!routeId) {
+      await client.query('ROLLBACK');
+      return fail(res, 400, 'No active route found for selected sector. Ask admin to create route.');
+    }
+
+    const sequenceRow = await client.query(
+      `SELECT COALESCE(MAX(route_sequence), 0)::int + 1 AS next_sequence
+       FROM orders
+       WHERE route_id = $1
+         AND DATE(created_at) = CURRENT_DATE`,
+      [routeId],
+    );
+    const routeSequence = sequenceRow.rows[0]?.next_sequence ?? 1;
+
     const subtotal = cart.rows.reduce((sum, i) => sum + Number(i.price) * Number(i.quantity), 0);
     let discount = 0;
     if (coupon_code) {
@@ -75,10 +135,29 @@ orderRouter.post('/', async (req, res) => {
     const status = payment_mode === 'UPI' ? 'PENDING_PAYMENT' : 'CONFIRMED';
 
     const order = await client.query(
-      `INSERT INTO orders (user_id, address_id, slot_id, payment_mode, status, subtotal, discount, gst, wallet_redeem, total)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      `INSERT INTO orders (
+          user_id, address_id, slot_id, payment_mode, status,
+          subtotal, discount, gst, wallet_redeem, total,
+          sector_id, building_id, route_id, route_sequence
+        )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
-      [req.user.sub, address_id, slot_id, payment_mode, status, subtotal, discount, gst, wallet_redeem, total],
+      [
+        req.user.sub,
+        address_id,
+        slot_id,
+        payment_mode,
+        status,
+        subtotal,
+        discount,
+        gst,
+        wallet_redeem,
+        total,
+        addressRow.sector_id,
+        addressRow.building_id ?? null,
+        routeId,
+        routeSequence,
+      ],
     );
     const orderId = order.rows[0].id;
 

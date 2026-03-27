@@ -41,7 +41,16 @@ class _OrdersHistoryScreenState extends ConsumerState<OrdersHistoryScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: DT.bg,
-      appBar: const FreshAppBar(title: 'My Orders'),
+      appBar: FreshAppBar(
+        title: 'My Orders',
+        onBack: () {
+          if (Navigator.of(context).canPop()) {
+            Navigator.of(context).maybePop();
+            return;
+          }
+          context.go('/home');
+        },
+      ),
       body: SafeArea(
         top: false,
         child: FutureBuilder<List<Map<String, dynamic>>>(

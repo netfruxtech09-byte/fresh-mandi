@@ -1,8 +1,10 @@
+import 'dart:developer';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:pretty_dio_logger/pretty_dio_logger.dart';
 
 import '../constants/app_constants.dart';
+import 'api_error_mapper.dart';
 import '../storage/secure_storage.dart';
 
 final dioProvider = Provider<Dio>((ref) {
@@ -23,11 +25,28 @@ final dioProvider = Provider<Dio>((ref) {
         if (token != null) {
           options.headers['Authorization'] = 'Bearer $token';
         }
+        log(
+          '[API][REQUEST] ${options.method} ${options.uri}',
+          name: 'fresh_mandi_app.api',
+        );
         handler.next(options);
+      },
+      onResponse: (response, handler) {
+        log(
+          '[API][RESPONSE] ${response.statusCode} ${response.requestOptions.method} ${response.requestOptions.uri}',
+          name: 'fresh_mandi_app.api',
+        );
+        handler.next(response);
+      },
+      onError: (error, handler) {
+        final friendly = mapDioErrorMessage(error);
+        log(
+          '[API][ERROR] ${error.response?.statusCode ?? 'NO_STATUS'} ${error.requestOptions.method} ${error.requestOptions.uri} :: $friendly',
+          name: 'fresh_mandi_app.api',
+        );
+        handler.next(error.copyWith(message: friendly));
       },
     ),
   );
-
-  dio.interceptors.add(PrettyDioLogger(requestBody: true, responseBody: true));
   return dio;
 });

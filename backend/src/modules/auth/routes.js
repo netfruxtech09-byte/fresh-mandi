@@ -19,6 +19,30 @@ authRouter.post('/otp/request', async (req, res) => {
   const normalizedPhone = normalizeIndianPhone(parsed.data.phone);
   if (!normalizedPhone) return fail(res, 400, 'Invalid Indian phone number');
 
+  const deliveryExecutive = await pool.query(
+    'SELECT id, active FROM delivery_executives WHERE phone = $1',
+    [normalizedPhone],
+  );
+  if (deliveryExecutive.rowCount) {
+    return fail(
+      res,
+      403,
+      'This number is linked to a delivery executive account. Please login from Delivery app.',
+    );
+  }
+
+  const processingStaff = await pool.query(
+    'SELECT id, active FROM processing_staff WHERE phone = $1',
+    [normalizedPhone],
+  );
+  if (processingStaff.rowCount) {
+    return fail(
+      res,
+      403,
+      'This number is linked to processing staff account. Please login from Processing app.',
+    );
+  }
+
   const otp = env.otpBypass ? env.otpBypassCode : `${Math.floor(100000 + Math.random() * 900000)}`;
 
   await pool.query(
@@ -56,6 +80,30 @@ authRouter.post('/otp/verify', async (req, res) => {
 
   const normalizedPhone = normalizeIndianPhone(parsed.data.phone);
   if (!normalizedPhone) return fail(res, 400, 'Invalid Indian phone number');
+
+  const deliveryExecutive = await pool.query(
+    'SELECT id, active FROM delivery_executives WHERE phone = $1',
+    [normalizedPhone],
+  );
+  if (deliveryExecutive.rowCount) {
+    return fail(
+      res,
+      403,
+      'This number is linked to a delivery executive account. Please login from Delivery app.',
+    );
+  }
+
+  const processingStaff = await pool.query(
+    'SELECT id, active FROM processing_staff WHERE phone = $1',
+    [normalizedPhone],
+  );
+  if (processingStaff.rowCount) {
+    return fail(
+      res,
+      403,
+      'This number is linked to processing staff account. Please login from Processing app.',
+    );
+  }
 
   const { otp } = parsed.data;
   const otpRow = await pool.query(

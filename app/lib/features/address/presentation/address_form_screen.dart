@@ -21,13 +21,19 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
   final _formKey = GlobalKey<FormState>();
   final _label = TextEditingController(text: 'Home');
   final _line1 = TextEditingController();
-  final _city = TextEditingController();
-  final _state = TextEditingController();
   final _pincode = TextEditingController();
 
   bool _isDefault = false;
   bool _loading = true;
   bool _saving = false;
+  List<Map<String, dynamic>> _sectors = const [];
+  List<Map<String, dynamic>> _buildings = const [];
+  List<String> _cities = const ['Mohali'];
+  String _selectedCity = 'Mohali';
+  String _selectedState = 'Punjab';
+  Set<String> _allowedPincodes = const {};
+  int? _selectedSectorId;
+  int? _selectedBuildingId;
 
   @override
   void initState() {
@@ -39,31 +45,86 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
   void dispose() {
     _label.dispose();
     _line1.dispose();
-    _city.dispose();
-    _state.dispose();
     _pincode.dispose();
     super.dispose();
   }
 
   Future<void> _bootstrap() async {
     try {
+      final repo = ref.read(addressRepositoryProvider);
+      final serviceability = await repo.fetchServiceability();
+      final cities = ((serviceability['cities'] as List?) ?? const [])
+          .map((e) => '$e'.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      _cities = cities.isEmpty ? const ['Mohali'] : cities;
+      _selectedCity = '${serviceability['city'] ?? _cities.first}'.trim();
+      if (_selectedCity.isEmpty || !_cities.contains(_selectedCity)) {
+        _selectedCity = _cities.first;
+      }
+      _selectedState = '${serviceability['state'] ?? 'Punjab'}'.trim();
+      _allowedPincodes = (((serviceability['pincodes'] as List?) ?? const [])
+          .map((e) => '$e'.trim())
+          .where((e) => RegExp(r'^\d{6}$').hasMatch(e))).toSet();
+
+      _sectors = await repo.fetchSectors();
       final all = await ref.read(addressRepositoryProvider).fetchAddresses();
       if (widget.addressId == null) {
         _isDefault = all.isEmpty;
       } else {
         final current = all.firstWhere(
-          (a) => ((a['id'] as num?)?.toInt() ?? int.tryParse('${a['id']}')) == widget.addressId,
+          (a) =>
+              ((a['id'] as num?)?.toInt() ?? int.tryParse('${a['id']}')) ==
+              widget.addressId,
           orElse: () => <String, dynamic>{},
         );
         if (current.isNotEmpty) {
           _label.text = '${current['label'] ?? 'Home'}';
           _line1.text = '${current['line1'] ?? ''}';
-          _city.text = '${current['city'] ?? ''}';
-          _state.text = '${current['state'] ?? ''}';
+          final currentCity = '${current['city'] ?? ''}'.trim();
+          if (currentCity.isNotEmpty && _cities.contains(currentCity)) {
+            _selectedCity = currentCity;
+          }
+          final currentState = '${current['state'] ?? ''}'.trim();
+          if (currentState.isNotEmpty) _selectedState = currentState;
           _pincode.text = '${current['pincode'] ?? ''}';
+          _selectedSectorId = (current['sector_id'] as num?)?.toInt() ??
+              int.tryParse('${current['sector_id']}');
+          _selectedBuildingId = (current['building_id'] as num?)?.toInt() ??
+              int.tryParse('${current['building_id']}');
           _isDefault = current['is_default'] == true;
         }
       }
+
+      if (_selectedSectorId == null && _sectors.isNotEmpty) {
+        _selectedSectorId = (_sectors.first['id'] as num?)?.toInt();
+      }
+      if (_selectedSectorId != null) {
+        _buildings = await repo.fetchBuildings(sectorId: _selectedSectorId!);
+        final buildingExists = _buildings.any(
+          (b) =>
+              ((b['id'] as num?)?.toInt() ?? int.tryParse('${b['id']}')) ==
+              _selectedBuildingId,
+        );
+        if (!buildingExists) _selectedBuildingId = null;
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _onSectorChanged(int? sectorId) async {
+    if (sectorId == null) return;
+    setState(() {
+      _selectedSectorId = sectorId;
+      _selectedBuildingId = null;
+      _buildings = const [];
+      _loading = true;
+    });
+    try {
+      _buildings = await ref
+          .read(addressRepositoryProvider)
+          .fetchBuildings(sectorId: sectorId);
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -75,6 +136,17 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
       AppFeedback.error(context, 'Please fill all fields correctly.');
       return;
     }
+    if (_selectedSectorId == null || _selectedSectorId! <= 0) {
+      AppFeedback.error(context, 'Please select sector.');
+      return;
+    }
+    final normalizedPincode = _pincode.text.trim();
+    if (_allowedPincodes.isNotEmpty &&
+        !_allowedPincodes.contains(normalizedPincode)) {
+      AppFeedback.error(
+          context, 'Currently we are not delivering at this pincode.');
+      return;
+    }
 
     setState(() => _saving = true);
     try {
@@ -83,9 +155,11 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
         await repo.createAddress(
           label: _label.text.trim(),
           line1: _line1.text.trim(),
-          city: _city.text.trim(),
-          state: _state.text.trim(),
-          pincode: _pincode.text.trim(),
+          city: _selectedCity,
+          state: _selectedState,
+          pincode: normalizedPincode,
+          sectorId: _selectedSectorId!,
+          buildingId: _selectedBuildingId,
           isDefault: _isDefault,
         );
       } else {
@@ -93,9 +167,11 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
           id: widget.addressId!,
           label: _label.text.trim(),
           line1: _line1.text.trim(),
-          city: _city.text.trim(),
-          state: _state.text.trim(),
-          pincode: _pincode.text.trim(),
+          city: _selectedCity,
+          state: _selectedState,
+          pincode: normalizedPincode,
+          sectorId: _selectedSectorId!,
+          buildingId: _selectedBuildingId,
           isDefault: _isDefault,
         );
       }
@@ -121,7 +197,8 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
 
     return Scaffold(
       backgroundColor: DT.bg,
-      appBar: FreshAppBar(title: widget.addressId == null ? 'Add Address' : 'Edit Address'),
+      appBar: FreshAppBar(
+          title: widget.addressId == null ? 'Add Address' : 'Edit Address'),
       body: SafeArea(
         top: false,
         child: Form(
@@ -132,21 +209,131 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
             children: [
               Container(
                 padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18), boxShadow: DT.softShadow),
+                decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    boxShadow: DT.softShadow),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     _labelText('Address Label'),
                     const SizedBox(height: 6),
-                    _input(_label, hint: 'Home, Office', validator: Validators.addressLabel),
+                    _input(_label,
+                        hint: 'Home, Office',
+                        validator: Validators.addressLabel),
                     const SizedBox(height: 10),
                     _labelText('Address Line'),
                     const SizedBox(height: 6),
-                    _input(_line1, hint: 'House no., Street, Landmark', validator: (v) => Validators.minLength(v, min: 2, label: 'Address line')),
+                    _input(_line1,
+                        hint: 'House no., Street, Landmark',
+                        validator: (v) => Validators.minLength(v,
+                            min: 2, label: 'Address line')),
                     const SizedBox(height: 10),
                     _labelText('City'),
                     const SizedBox(height: 6),
-                    _input(_city, hint: 'City', validator: (v) => Validators.minLength(v, min: 2, label: 'City')),
+                    DropdownButtonFormField<String>(
+                      initialValue: _selectedCity,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFFF2F4F7),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: Color(0xFF86EFAC), width: 1),
+                        ),
+                      ),
+                      items: _cities
+                          .map((city) =>
+                              DropdownMenuItem(value: city, child: Text(city)))
+                          .toList(),
+                      onChanged: (v) {
+                        if (v == null) return;
+                        setState(() => _selectedCity = v);
+                      },
+                    ),
+                    const SizedBox(height: 10),
+                    _labelText('Sector'),
+                    const SizedBox(height: 6),
+                    DropdownButtonFormField<int>(
+                      initialValue: _selectedSectorId,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFFF2F4F7),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: Color(0xFF86EFAC), width: 1),
+                        ),
+                      ),
+                      items: _sectors
+                          .map((s) {
+                            final id = (s['id'] as num?)?.toInt() ??
+                                int.tryParse('${s['id']}');
+                            if (id == null) return null;
+                            return DropdownMenuItem<int>(
+                              value: id,
+                              child: Text(
+                                  '${s['name'] ?? 'Sector'} (${s['code'] ?? '-'})'),
+                            );
+                          })
+                          .whereType<DropdownMenuItem<int>>()
+                          .toList(),
+                      onChanged: (v) => _onSectorChanged(v),
+                      validator: (v) =>
+                          (v == null || v <= 0) ? 'Sector is required' : null,
+                    ),
+                    const SizedBox(height: 10),
+                    _labelText('Building (Optional)'),
+                    const SizedBox(height: 6),
+                    DropdownButtonFormField<int>(
+                      initialValue: _selectedBuildingId,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: const Color(0xFFF2F4F7),
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(14),
+                            borderSide: BorderSide.none),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(14),
+                          borderSide: const BorderSide(
+                              color: Color(0xFF86EFAC), width: 1),
+                        ),
+                      ),
+                      items: [
+                        ..._buildings.map((b) {
+                          final id = (b['id'] as num?)?.toInt() ??
+                              int.tryParse('${b['id']}');
+                          if (id == null) return null;
+                          return DropdownMenuItem<int>(
+                            value: id,
+                            child: Text(
+                                '${b['name'] ?? 'Building'} (${b['code'] ?? '-'})'),
+                          );
+                        }).whereType<DropdownMenuItem<int>>(),
+                      ],
+                      onChanged: (v) => setState(() => _selectedBuildingId = v),
+                    ),
                     const SizedBox(height: 10),
                     Row(
                       children: [
@@ -156,7 +343,31 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
                             children: [
                               _labelText('State'),
                               const SizedBox(height: 6),
-                              _input(_state, hint: 'State', validator: (v) => Validators.minLength(v, min: 2, label: 'State')),
+                              TextFormField(
+                                initialValue: _selectedState,
+                                readOnly: true,
+                                decoration: InputDecoration(
+                                  hintText: 'State',
+                                  counterText: '',
+                                  hintStyle: const TextStyle(
+                                      color: Color(0xFF6B7280), fontSize: 14.5),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF2F4F7),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 10),
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                      borderSide: BorderSide.none),
+                                  enabledBorder: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                      borderSide: BorderSide.none),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                    borderSide: const BorderSide(
+                                        color: Color(0xFF86EFAC), width: 1),
+                                  ),
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -172,7 +383,9 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
                                 hint: '160055',
                                 keyboardType: TextInputType.number,
                                 maxLength: 6,
-                                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                                inputFormatters: [
+                                  FilteringTextInputFormatter.digitsOnly
+                                ],
                                 validator: Validators.indianPincode,
                               ),
                             ],
@@ -180,13 +393,23 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
                         ),
                       ],
                     ),
+                    if (_allowedPincodes.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        'Serviceable pincodes: ${_allowedPincodes.take(8).join(', ')}${_allowedPincodes.length > 8 ? ' ...' : ''}',
+                        style: const TextStyle(
+                            fontSize: 12.5, color: Color(0xFF475467)),
+                      ),
+                    ],
                     const SizedBox(height: 10),
                     SwitchListTile.adaptive(
                       value: _isDefault,
                       onChanged: (v) => setState(() => _isDefault = v),
                       activeThumbColor: Colors.white,
                       activeTrackColor: DT.primaryDark,
-                      title: const Text('Set as default address', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14.5)),
+                      title: const Text('Set as default address',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14.5)),
                       contentPadding: EdgeInsets.zero,
                     ),
                     const SizedBox(height: 8),
@@ -197,9 +420,11 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
                             onPressed: () => context.pop(),
                             style: OutlinedButton.styleFrom(
                               minimumSize: const Size.fromHeight(48),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14)),
                             ),
-                            child: const Text('Cancel', style: TextStyle(fontWeight: FontWeight.w700)),
+                            child: const Text('Cancel',
+                                style: TextStyle(fontWeight: FontWeight.w700)),
                           ),
                         ),
                         const SizedBox(width: 10),
@@ -209,11 +434,18 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
                             style: FilledButton.styleFrom(
                               backgroundColor: DT.primaryDark,
                               minimumSize: const Size.fromHeight(48),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14)),
                             ),
                             child: _saving
-                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                                : const Text('Save Address', style: TextStyle(fontWeight: FontWeight.w700)),
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white))
+                                : const Text('Save Address',
+                                    style:
+                                        TextStyle(fontWeight: FontWeight.w700)),
                           ),
                         ),
                       ],
@@ -229,7 +461,9 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
   }
 
   Widget _labelText(String text) {
-    return Text(text, style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600, color: DT.text));
+    return Text(text,
+        style: const TextStyle(
+            fontSize: 14.5, fontWeight: FontWeight.w600, color: DT.text));
   }
 
   Widget _input(
@@ -252,9 +486,14 @@ class _AddressFormScreenState extends ConsumerState<AddressFormScreen> {
         hintStyle: const TextStyle(color: Color(0xFF6B7280), fontSize: 14.5),
         filled: true,
         fillColor: const Color(0xFFF2F4F7),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide.none),
+        enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide.none),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: const BorderSide(color: Color(0xFF86EFAC), width: 1),

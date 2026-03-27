@@ -50,19 +50,20 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyBfJ0OWQb3siiWG4niKy9RkkqZn_SKeomA',
-    appId: '1:45242086076:android:24e6cd6a776fcfc2c916b9',
-    messagingSenderId: '45242086076',
-    projectId: 'fresh-mandi-netfrux-20260303',
-    storageBucket: 'fresh-mandi-netfrux-20260303.firebasestorage.app',
+    apiKey: 'AIzaSyDrN5Di5PtDkCIlsuwVCTr70lICTzIK7mg',
+    appId: '1:202374780740:android:53f8477ce8224010212911',
+    messagingSenderId: '202374780740',
+    projectId: 'fresh-mandi-netfrux604',
+    storageBucket: 'fresh-mandi-netfrux604.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyBfNHiQ00KD_JFCLWTarF5i9zEDmA4X4LM',
-    appId: '1:45242086076:ios:c0bf86e954b93942c916b9',
-    messagingSenderId: '45242086076',
-    projectId: 'fresh-mandi-netfrux-20260303',
-    storageBucket: 'fresh-mandi-netfrux-20260303.firebasestorage.app',
+    apiKey: 'AIzaSyCKdtd2rG1GCoPi7Ir5pQFA2ztAPLWJs1M',
+    appId: '1:202374780740:ios:b176961968ca775e212911',
+    messagingSenderId: '202374780740',
+    projectId: 'fresh-mandi-netfrux604',
+    storageBucket: 'fresh-mandi-netfrux604.firebasestorage.app',
     iosBundleId: 'com.freshmandi.app',
   );
+
 }

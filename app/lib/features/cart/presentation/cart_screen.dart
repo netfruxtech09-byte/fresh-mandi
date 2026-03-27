@@ -60,6 +60,9 @@ class _CartScreenState extends ConsumerState<CartScreen> {
     final itemsAsync = ref.watch(cartItemsProvider);
     final suggestionsAsync = ref.watch(cartSuggestionsProvider);
     final checkout = ref.watch(checkoutProvider);
+    final checkoutConfigAsync = ref.watch(checkoutConfigProvider);
+    final gstPercent =
+        checkoutConfigAsync.valueOrNull?.gstPercent ?? AppConstants.gstPercent;
     final itemCount =
         itemsAsync.maybeWhen(data: (items) => items.length, orElse: () => 0);
 
@@ -115,7 +118,7 @@ class _CartScreenState extends ConsumerState<CartScreen> {
             final subtotal = items.fold<double>(
                 0, (sum, i) => sum + i.product.price * i.quantity);
             final gst =
-                ((subtotal - checkout.discount) * AppConstants.gstPercent / 100)
+                ((subtotal - checkout.discount) * gstPercent / 100)
                     .clamp(0, double.infinity)
                     .toDouble();
             final total = (subtotal - checkout.discount + gst + deliveryCharge)
@@ -437,7 +440,7 @@ class _CartScreenState extends ConsumerState<CartScreen> {
                             const SizedBox(height: 10),
                             _line('Item Total', subtotal),
                             _line(
-                                'GST (${AppConstants.gstPercent.toStringAsFixed(0)}%)',
+                                'GST (${gstPercent.toStringAsFixed(0)}%)',
                                 gst),
                             _line('Delivery Charge', deliveryCharge),
                             if (checkout.discount > 0)

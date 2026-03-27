@@ -16,6 +16,8 @@ import { slotRouter } from './modules/slot/routes.js';
 import { notificationRouter } from './modules/notification/routes.js';
 import { adminRouter } from './modules/admin/routes.js';
 import { paymentRouter } from './modules/payment/routes.js';
+import { deliveryRouter } from './modules/delivery/routes.js';
+import { processingRouter } from './modules/processing/routes.js';
 import { getUploadsDir } from './utils/uploads.js';
 
 const app = express();
@@ -60,5 +62,7 @@ app.use('/api/v1/slots', slotRouter);
 app.use('/api/v1/notifications', notificationRouter);
 app.use('/api/v1/admin', adminRouter);
 app.use('/api/v1/payments', paymentRouter);
+app.use('/api/v1/delivery', deliveryRouter);
+app.use('/api/v1/processing', processingRouter);
 
 export default app;

@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:dio/dio.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../core/network/api_error_mapper.dart';
 import '../../../core/theme/design_tokens.dart';
 import '../../../core/utils/app_feedback.dart';
 import '../../../shared/widgets/fresh_app_bar.dart';
@@ -21,6 +23,13 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
   bool _loading = true;
   bool _actionBusy = false;
 
+  String _friendlyError(Object e, {required String fallback}) {
+    if (e is DioException) {
+      return mapDioErrorMessage(e, fallback: fallback);
+    }
+    return fallback;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -35,9 +44,12 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
       final data = await ref.read(addressRepositoryProvider).fetchAddresses();
       if (!mounted) return;
       setState(() => _addresses = data);
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
-      AppFeedback.error(context, 'Unable to load addresses.');
+      AppFeedback.error(
+        context,
+        _friendlyError(e, fallback: 'Unable to load addresses.'),
+      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -61,6 +73,18 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
   }
 
   Future<void> _deleteAddress(int id) async {
+    final selected = _addresses.firstWhere(
+      (a) => ((a['id'] as num?)?.toInt() ?? int.tryParse('${a['id']}')) == id,
+      orElse: () => <String, dynamic>{},
+    );
+    if (selected.isNotEmpty && selected['is_default'] == true) {
+      AppFeedback.error(
+        context,
+        'Default address cannot be deleted. Set another address as default first.',
+      );
+      return;
+    }
+
     final confirm = await showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -87,8 +111,13 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
       await ref.read(addressRepositoryProvider).deleteAddress(id);
       actionOk = true;
       if (mounted) AppFeedback.success(context, 'Address deleted.');
-    } catch (_) {
-      if (mounted) AppFeedback.error(context, 'Unable to delete address.');
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.error(
+          context,
+          _friendlyError(e, fallback: 'Unable to delete address.'),
+        );
+      }
     } finally {
       await _loadAddresses(showLoader: false);
       if (mounted) setState(() => _actionBusy = false);
@@ -105,9 +134,13 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
     try {
       await ref.read(addressRepositoryProvider).setDefaultAddress(id);
       if (mounted) AppFeedback.success(context, 'Default address changed.');
-    } catch (_) {
-      if (mounted)
-        AppFeedback.error(context, 'Unable to update default address.');
+    } catch (e) {
+      if (mounted) {
+        AppFeedback.error(
+          context,
+          _friendlyError(e, fallback: 'Unable to update default address.'),
+        );
+      }
     } finally {
       await _loadAddresses(showLoader: false);
       if (mounted) setState(() => _actionBusy = false);
@@ -306,7 +339,7 @@ class _AddressScreenState extends ConsumerState<AddressScreen> {
                                     ),
                                     const SizedBox(width: 8),
                                     OutlinedButton.icon(
-                                      onPressed: _actionBusy
+                                      onPressed: _actionBusy || isDefault
                                           ? null
                                           : () => _deleteAddress(id),
                                       style: OutlinedButton.styleFrom(

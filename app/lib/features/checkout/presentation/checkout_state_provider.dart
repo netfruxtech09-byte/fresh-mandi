@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/network/api_client.dart';
 
 enum PaymentMode { cod, upi }
 
@@ -36,6 +37,16 @@ class CheckoutState {
   }
 }
 
+class CheckoutConfig {
+  const CheckoutConfig({
+    required this.gstPercent,
+    required this.cutoffHour,
+  });
+
+  final double gstPercent;
+  final int cutoffHour;
+}
+
 class CheckoutNotifier extends StateNotifier<CheckoutState> {
   CheckoutNotifier() : super(const CheckoutState());
 
@@ -58,11 +69,30 @@ final checkoutProvider = StateNotifierProvider<CheckoutNotifier, CheckoutState>(
   return CheckoutNotifier();
 });
 
+final checkoutConfigProvider = FutureProvider<CheckoutConfig>((ref) async {
+  final dio = ref.watch(dioProvider);
+  final res = await dio.get('/catalog/serviceability');
+  final data = res.data['data'];
+  if (data is Map) {
+    final gst = double.tryParse('${data['gst_percent'] ?? AppConstants.gstPercent}') ??
+        AppConstants.gstPercent;
+    final cutoff =
+        int.tryParse('${data['cutoff_hour'] ?? AppConstants.orderCutoffHour}') ??
+            AppConstants.orderCutoffHour;
+    return CheckoutConfig(gstPercent: gst, cutoffHour: cutoff);
+  }
+  return const CheckoutConfig(
+    gstPercent: AppConstants.gstPercent,
+    cutoffHour: AppConstants.orderCutoffHour,
+  );
+});
+
 ({double subtotal, double gst, double total}) calculateCheckoutTotals({
   required double subtotal,
   required CheckoutState checkout,
+  required double gstPercent,
 }) {
-  final gst = ((subtotal - checkout.discount) * AppConstants.gstPercent / 100)
+  final gst = ((subtotal - checkout.discount) * gstPercent / 100)
       .clamp(0, double.infinity)
       .toDouble();
   final total = (subtotal - checkout.discount + gst - checkout.walletRedeem)

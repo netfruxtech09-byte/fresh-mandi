@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "45242086076",
-    "project_id": "fresh-mandi-netfrux-20260303",
-    "storage_bucket": "fresh-mandi-netfrux-20260303.firebasestorage.app"
+    "project_number": "202374780740",
+    "project_id": "fresh-mandi-netfrux604",
+    "storage_bucket": "fresh-mandi-netfrux604.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:45242086076:android:24e6cd6a776fcfc2c916b9",
+        "mobilesdk_app_id": "1:202374780740:android:53f8477ce8224010212911",
         "android_client_info": {
           "package_name": "com.freshmandi.app"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBfJ0OWQb3siiWG4niKy9RkkqZn_SKeomA"
+          "current_key": "AIzaSyDrN5Di5PtDkCIlsuwVCTr70lICTzIK7mg"
         }
       ],
       "services": {
