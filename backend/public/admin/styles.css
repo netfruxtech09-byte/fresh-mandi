@@ -369,6 +369,84 @@ th {
   margin-bottom: 8px;
 }
 
+.delivery-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.management-card {
+  border: 1px solid #d8e3da;
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at top left, rgba(227, 246, 234, 0.85), rgba(255, 255, 255, 0) 34%),
+    #ffffff;
+  padding: 16px;
+  box-shadow: 0 10px 24px rgba(16, 24, 40, 0.05);
+}
+
+.management-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.management-card h4 {
+  font-size: 20px;
+  margin-top: 2px;
+}
+
+.section-kicker {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.section-copy {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.management-form {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.field-stack {
+  display: grid;
+  gap: 6px;
+}
+
+.field-stack label {
+  margin: 0;
+  font-size: 12px;
+  color: #38505a;
+}
+
+.management-form .btn {
+  height: 44px;
+  border-radius: 12px;
+}
+
+.form-message {
+  min-height: 20px;
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.module-status {
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+
 .toast {
   position: fixed;
   right: 16px;
@@ -419,4 +497,6 @@ th {
   .side-nav { grid-template-columns: 1fr; }
   .route-form-grid { grid-template-columns: 1fr; }
   .delivery-form-grid { grid-template-columns: 1fr; }
+  .delivery-admin-grid { grid-template-columns: 1fr; }
+  .management-form { grid-template-columns: 1fr; }
 }

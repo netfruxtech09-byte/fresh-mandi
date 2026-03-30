@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../core/utils/api_error_mapper.dart';
 import '../../../shared/providers/auth_provider.dart';
 import '../../../shared/providers/delivery_provider.dart';
 import '../../collection/presentation/collection_summary_screen.dart';
@@ -17,12 +18,63 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  bool _startingRoute = false;
+  bool _completingRoute = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<DeliveryProvider>().loadAssignedRoute();
     });
+  }
+
+  Future<void> _handleStartRoute() async {
+    if (_startingRoute) return;
+    setState(() => _startingRoute = true);
+    try {
+      await context.read<DeliveryProvider>().startRoute();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('Route started.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(ApiErrorMapper.toMessage(e)),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _startingRoute = false);
+    }
+  }
+
+  Future<void> _handleCompleteRoute() async {
+    if (_completingRoute) return;
+    setState(() => _completingRoute = true);
+    try {
+      await context.read<DeliveryProvider>().completeRoute();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('Route completed.')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(ApiErrorMapper.toMessage(e)),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _completingRoute = false);
+    }
   }
 
   @override
@@ -111,14 +163,47 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               )
             else ...[
+              Card(
+                color: const Color(0xFFF5FAF3),
+                child: ListTile(
+                  leading: const Icon(Icons.schedule, color: Color(0xFF2E7D32)),
+                  title: const Text(
+                    'Delivery window',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  subtitle: Text(
+                    'Deliveries, scans, and payment collection are allowed only between ${route.deliveryWindowLabel}.',
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
               _kpiGrid(route, delivery.orders),
               const SizedBox(height: 12),
               FilledButton.icon(
-                onPressed: (route.status == 'IN_PROGRESS' || route.status == 'COMPLETED' || route.status == 'SETTLEMENT_DONE')
+                onPressed: (_startingRoute ||
+                        route.status == 'IN_PROGRESS' ||
+                        route.status == 'COMPLETED' ||
+                        route.status == 'SETTLEMENT_DONE')
                     ? null
-                    : delivery.startRoute,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Start Route'),
+                    : _handleStartRoute,
+                icon: _startingRoute
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Icon(Icons.play_arrow),
+                label: Text(
+                  route.status == 'IN_PROGRESS'
+                      ? 'Route In Progress'
+                      : route.status == 'COMPLETED' ||
+                            route.status == 'SETTLEMENT_DONE'
+                      ? 'Route Already Closed'
+                      : 'Start Route',
+                ),
               ),
               const SizedBox(height: 10),
               FilledButton.tonalIcon(
@@ -150,8 +235,17 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 10),
               FilledButton(
-                onPressed: delivery.completeRoute,
-                child: const Text('Complete Route'),
+                onPressed: _completingRoute ? null : _handleCompleteRoute,
+                child: _completingRoute
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Complete Route'),
               ),
             ],
           ],
@@ -175,6 +269,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ['Delivered', '${hasOrderSnapshot ? deliveredFromOrders : route.deliveredCount}'],
       ['Pending', '${hasOrderSnapshot ? pendingFromOrders : route.pendingCount}'],
       ['Collection', '₹${route.totalCollection.toStringAsFixed(2)}'],
+      ['Window', route.deliveryWindowLabel],
     ];
 
     return GridView.builder(
@@ -185,7 +280,7 @@ class _HomeScreenState extends State<HomeScreen> {
         crossAxisCount: 2,
         mainAxisSpacing: 10,
         crossAxisSpacing: 10,
-        childAspectRatio: 1.9,
+        childAspectRatio: 1.75,
       ),
       itemBuilder: (_, i) {
         return Card(

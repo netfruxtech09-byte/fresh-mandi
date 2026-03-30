@@ -16,7 +16,6 @@ dependencies:
   firebase_messaging: ^15.2.10
   flutter_secure_storage: ^9.2.4
   shared_preferences: ^2.5.3
-  flutter_dotenv: ^5.2.1
   connectivity_plus: ^6.1.5
   sqflite: ^2.4.2
   path_provider: ^2.1.5
@@ -40,7 +39,6 @@ flutter:
   assets:
     - assets/icon/app_icon.png
     - assets/splash/splash_logo.png
-    - .env
 
 flutter_launcher_icons:
   android: true

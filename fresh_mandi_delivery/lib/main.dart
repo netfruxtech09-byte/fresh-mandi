@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_windowmanager_plus/flutter_windowmanager_plus.dart';
 import 'package:provider/provider.dart';
 
@@ -18,7 +17,6 @@ import 'shared/providers/delivery_provider.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: '.env');
   await FirebaseBootstrap.init();
   if (Platform.isAndroid) {
     await FlutterWindowManagerPlus.addFlags(

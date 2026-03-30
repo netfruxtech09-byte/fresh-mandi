@@ -191,9 +191,9 @@
             <button id="refreshProcessingStaff" class="btn btn-outline">Refresh</button>
           </div>
           <form id="processingStaffForm" class="form-grid delivery-form-grid">
-            <input id="processingStaffName" placeholder="Staff name" required />
-            <input id="processingStaffPhone" placeholder="Phone (+91XXXXXXXXXX)" required />
-            <input id="processingStaffCode" placeholder="Employee code (optional)" />
+            <input id="processingStaffName" placeholder="Staff name" maxlength="60" required />
+            <input id="processingStaffPhone" placeholder="Phone (+91XXXXXXXXXX)" inputmode="numeric" maxlength="10" required />
+            <input id="processingStaffCode" placeholder="Employee code (optional)" maxlength="24" />
             <button type="submit" class="btn btn-primary">Add Processing Staff</button>
           </form>
           <p id="processingStaffMsg" class="muted"></p>
@@ -208,19 +208,60 @@
             <h3>Delivery Management</h3>
             <button id="refreshDelivery" class="btn btn-outline">Refresh</button>
           </div>
-          <form id="deliveryExecutiveForm" class="form-grid delivery-form-grid">
-            <input id="deliveryExecName" placeholder="Executive name" required />
-            <input id="deliveryExecPhone" placeholder="Phone (+91XXXXXXXXXX)" required />
-            <input id="deliveryExecCode" placeholder="Employee code (optional)" />
-            <button type="submit" class="btn btn-primary">Add Executive</button>
-          </form>
-          <form id="deliveryAssignmentForm" class="form-grid delivery-form-grid">
-            <input id="deliveryBusinessDate" type="date" required />
-            <select id="deliveryRouteId" required></select>
-            <select id="deliveryExecutiveId" required></select>
-            <button type="submit" class="btn btn-primary">Assign Route</button>
-          </form>
-          <p id="deliveryModuleMsg" class="muted"></p>
+          <div class="delivery-admin-grid">
+            <div class="management-card">
+              <div class="management-card-head">
+                <div>
+                  <p class="section-kicker">Step 1</p>
+                  <h4>Add Delivery Executive</h4>
+                  <p class="section-copy">Create the delivery executive profile first. Only active executives appear in the route assignment list.</p>
+                </div>
+              </div>
+              <form id="deliveryExecutiveForm" class="form-grid management-form">
+                <div class="field-stack">
+                  <label for="deliveryExecName">Executive name</label>
+                  <input id="deliveryExecName" placeholder="Enter full name" maxlength="60" autocomplete="name" required />
+                </div>
+                <div class="field-stack">
+                  <label for="deliveryExecPhone">Phone number</label>
+                  <input id="deliveryExecPhone" placeholder="10-digit mobile number" inputmode="numeric" autocomplete="tel" maxlength="10" required />
+                </div>
+                <div class="field-stack">
+                  <label for="deliveryExecCode">Employee code</label>
+                  <input id="deliveryExecCode" placeholder="Optional internal code" maxlength="24" />
+                </div>
+                <button type="submit" class="btn btn-primary">Add Executive</button>
+              </form>
+              <p id="deliveryExecutiveMsg" class="form-message muted"></p>
+            </div>
+
+            <div class="management-card">
+              <div class="management-card-head">
+                <div>
+                  <p class="section-kicker">Step 2</p>
+                  <h4>Assign Route</h4>
+                  <p class="section-copy">After an executive is created, choose the business date, route, and active executive to assign the delivery run clearly.</p>
+                </div>
+              </div>
+              <form id="deliveryAssignmentForm" class="form-grid management-form">
+                <div class="field-stack">
+                  <label for="deliveryBusinessDate">Business date</label>
+                  <input id="deliveryBusinessDate" type="date" required />
+                </div>
+                <div class="field-stack">
+                  <label for="deliveryRouteId">Route</label>
+                  <select id="deliveryRouteId" required></select>
+                </div>
+                <div class="field-stack">
+                  <label for="deliveryExecutiveId">Delivery executive</label>
+                  <select id="deliveryExecutiveId" required></select>
+                </div>
+                <button type="submit" class="btn btn-primary">Assign Route</button>
+              </form>
+              <p id="deliveryAssignmentMsg" class="form-message muted"></p>
+            </div>
+          </div>
+          <p id="deliveryModuleMsg" class="module-status muted"></p>
           <div id="deliverySummary" class="placeholder-box"></div>
           <div class="placeholder-box">
             <h4>Sector-wise Route Monitor</h4>

@@ -7,6 +7,7 @@ import { signToken } from '../../utils/jwt.js';
 import { normalizeIndianPhone, sendOtpSms } from '../../utils/sms.js';
 import { ok, fail } from '../../utils/response.js';
 import { authMiddleware } from '../../middleware/auth.js';
+import { getNumericSetting } from '../../utils/settings.js';
 
 export const deliveryRouter = express.Router();
 
@@ -41,6 +42,11 @@ const collectPaymentSchema = z.object({
   collected_amount: z.coerce.number().nonnegative(),
 });
 
+const cashHandoverSchema = z.object({
+  route_id: z.coerce.number().int().positive(),
+  notes: z.string().max(200).optional().nullable(),
+});
+
 function barcodeToOrderId(raw) {
   const text = `${raw ?? ''}`.trim();
   if (!text) return null;
@@ -70,6 +76,37 @@ async function getTodayAssignment(executiveId) {
     [executiveId],
   );
   return assignment.rows[0] ?? null;
+}
+
+async function getDeliveryWindowHours() {
+  const [startHour, endHour] = await Promise.all([
+    getNumericSetting('delivery_window_start_hour', env.deliveryWindowStartHour),
+    getNumericSetting('delivery_window_end_hour', env.deliveryWindowEndHour),
+  ]);
+  return { startHour, endHour };
+}
+
+function formatHourLabel(hour) {
+  const normalized = Math.max(0, Math.min(23, Number(hour) || 0));
+  const suffix = normalized >= 12 ? 'PM' : 'AM';
+  const twelveHour = normalized % 12 === 0 ? 12 : normalized % 12;
+  return `${twelveHour}:00 ${suffix}`;
+}
+
+async function ensureWithinDeliveryWindow() {
+  const { startHour, endHour } = await getDeliveryWindowHours();
+  const now = new Date();
+  const currentHour = now.getHours();
+  if (currentHour < startHour || currentHour >= endHour) {
+    return {
+      ok: false,
+      code: 409,
+      message: `Delivery actions are allowed only between ${formatHourLabel(startHour)} and ${formatHourLabel(endHour)}.`,
+      startHour,
+      endHour,
+    };
+  }
+  return { ok: true, startHour, endHour };
 }
 
 async function upsertTodayDeliveryLog({
@@ -284,8 +321,21 @@ deliveryRouter.use((req, res, next) => {
   return next();
 });
 
+deliveryRouter.post('/logout', async (req, res) => {
+  await pool.query(
+    `UPDATE delivery_executives
+     SET device_id = NULL,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [req.user.sub],
+  );
+
+  return ok(res, null, 'Delivery executive logged out');
+});
+
 deliveryRouter.get('/assigned-route', async (req, res) => {
   const assignment = await getTodayAssignment(req.user.sub);
+  const window = await getDeliveryWindowHours();
   if (!assignment) return ok(res, null, 'No route assigned today');
 
   const counts = await pool.query(
@@ -323,12 +373,19 @@ deliveryRouter.get('/assigned-route', async (req, res) => {
     route_status: assignment.status,
     route_start_time: assignment.route_start_time,
     route_end_time: assignment.route_end_time,
+    cash_handover_confirmed_at: assignment.cash_handover_confirmed_at ?? null,
+    cash_handover_amount: Number(assignment.cash_handover_amount ?? 0),
+    delivery_window_start_hour: window.startHour,
+    delivery_window_end_hour: window.endHour,
   });
 });
 
 deliveryRouter.post('/start-route', async (req, res) => {
   const parsed = routeActionSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'Invalid payload');
+
+  const windowGuard = await ensureWithinDeliveryWindow();
+  if (!windowGuard.ok) return fail(res, windowGuard.code, windowGuard.message);
 
   const assignment = await pool.query(
     `UPDATE delivery_route_assignments
@@ -414,6 +471,9 @@ deliveryRouter.post('/scan-order', async (req, res) => {
   const parsed = payloadSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'Invalid payload');
 
+  const windowGuard = await ensureWithinDeliveryWindow();
+  if (!windowGuard.ok) return fail(res, windowGuard.code, windowGuard.message);
+
   const orderId = barcodeToOrderId(parsed.data.barcode);
   if (!orderId) return fail(res, 400, 'Invalid barcode');
 
@@ -473,6 +533,9 @@ deliveryRouter.post('/scan-order', async (req, res) => {
 deliveryRouter.post('/mark-delivered', async (req, res) => {
   const parsed = deliveredSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'Invalid payload');
+
+  const windowGuard = await ensureWithinDeliveryWindow();
+  if (!windowGuard.ok) return fail(res, windowGuard.code, windowGuard.message);
 
   const owned = await pool.query(
     `SELECT o.id, o.payment_mode, o.payment_status, o.delivery_scan_verified, o.delivery_status, a.status AS assignment_status
@@ -538,6 +601,9 @@ deliveryRouter.post('/mark-failed', async (req, res) => {
   const parsed = failedSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'Invalid payload');
 
+  const windowGuard = await ensureWithinDeliveryWindow();
+  if (!windowGuard.ok) return fail(res, windowGuard.code, windowGuard.message);
+
   const owned = await pool.query(
     `SELECT o.id, o.route_id
      FROM orders o
@@ -583,6 +649,9 @@ deliveryRouter.post('/mark-failed', async (req, res) => {
 deliveryRouter.post('/collect-payment', async (req, res) => {
   const parsed = collectPaymentSchema.safeParse(req.body);
   if (!parsed.success) return fail(res, 400, 'Invalid payload');
+
+  const windowGuard = await ensureWithinDeliveryWindow();
+  if (!windowGuard.ok) return fail(res, windowGuard.code, windowGuard.message);
 
   const owned = await pool.query(
     `SELECT o.id, o.route_id, o.total, o.payment_mode, o.payment_status, o.delivery_status, a.status AS assignment_status
@@ -689,7 +758,62 @@ deliveryRouter.post('/complete-route', async (req, res) => {
   return ok(res, row.rows[0], 'Route completed');
 });
 
+deliveryRouter.post('/cash-handover', async (req, res) => {
+  const parsed = cashHandoverSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid payload');
+
+  const guard = await ensureAssignmentForRoute({
+    executiveId: req.user.sub,
+    routeId: parsed.data.route_id,
+    allowCompleted: true,
+  });
+  if (!guard.ok) return fail(res, guard.code, guard.message);
+
+  const assignmentStatus = `${guard.assignment.status ?? ''}`.toUpperCase();
+  if (assignmentStatus !== 'COMPLETED' && assignmentStatus !== 'SETTLEMENT_DONE') {
+    return fail(res, 409, 'Complete route before confirming cash handover.');
+  }
+  if (assignmentStatus === 'SETTLEMENT_DONE') {
+    return ok(res, guard.assignment, 'Cash handover already confirmed');
+  }
+
+  const totals = await pool.query(
+    `SELECT
+        COALESCE(
+          SUM(o.total) FILTER (
+            WHERE COALESCE(o.payment_status::text, 'PENDING') = 'PAID'
+              AND COALESCE(o.payment_mode, 'CASH') IN ('CASH','COD')
+          ),
+          0
+        )::numeric(12,2) AS total_cash
+     FROM orders o
+     WHERE o.route_id = $1
+       AND o.created_at >= CURRENT_DATE
+       AND o.created_at < (CURRENT_DATE + INTERVAL '1 day')`,
+    [parsed.data.route_id],
+  );
+
+  const updated = await pool.query(
+    `UPDATE delivery_route_assignments
+     SET status = 'SETTLEMENT_DONE',
+         cash_handover_confirmed_at = NOW(),
+         cash_handover_amount = $2,
+         cash_handover_notes = COALESCE($3, cash_handover_notes),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [
+      guard.assignment.id,
+      Number(totals.rows[0]?.total_cash ?? 0),
+      parsed.data.notes?.trim() || null,
+    ],
+  );
+
+  return ok(res, updated.rows[0], 'Cash handover confirmed');
+});
+
 deliveryRouter.get('/daily-summary', async (req, res) => {
+  const window = await getDeliveryWindowHours();
   const summary = await pool.query(
     `SELECT
         COALESCE(
@@ -726,5 +850,17 @@ deliveryRouter.get('/daily-summary', async (req, res) => {
     [req.user.sub],
   );
 
-  return ok(res, summary.rows[0] ?? {});
+  const assignment = await getTodayAssignment(req.user.sub);
+  return ok(res, {
+    ...(summary.rows[0] ?? {}),
+    route_id: assignment?.route_id ?? null,
+    route_code: assignment?.route_code ?? null,
+    route_status: assignment?.status ?? 'UNASSIGNED',
+    route_start_time: assignment?.route_start_time ?? null,
+    route_end_time: assignment?.route_end_time ?? null,
+    cash_handover_confirmed_at: assignment?.cash_handover_confirmed_at ?? null,
+    cash_handover_amount: Number(assignment?.cash_handover_amount ?? 0),
+    delivery_window_start_hour: window.startHour,
+    delivery_window_end_hour: window.endHour,
+  });
 });

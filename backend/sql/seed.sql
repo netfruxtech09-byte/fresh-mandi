@@ -32,8 +32,8 @@ INSERT INTO delivery_slots (label, starts_at, ends_at)
 SELECT v.label, v.starts_at, v.ends_at
 FROM (
   VALUES
-    ('7:00 AM - 9:00 AM', '07:00:00'::time, '09:00:00'::time),
-    ('9:00 AM - 11:00 AM', '09:00:00'::time, '11:00:00'::time)
+    ('6:00 AM - 8:00 AM', '06:00:00'::time, '08:00:00'::time),
+    ('8:00 AM - 10:00 AM', '08:00:00'::time, '10:00:00'::time)
 ) AS v(label, starts_at, ends_at)
 WHERE NOT EXISTS (
   SELECT 1 FROM delivery_slots d WHERE d.label = v.label
@@ -46,6 +46,8 @@ ON CONFLICT (code) DO NOTHING;
 INSERT INTO app_settings (key, value)
 VALUES
   ('cutoff_hour', '21'),
+  ('delivery_window_start_hour', '6'),
+  ('delivery_window_end_hour', '10'),
   ('gst_percent', '5'),
   ('service_city', 'Mohali'),
   ('service_pincodes', '')

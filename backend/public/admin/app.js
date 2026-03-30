@@ -85,9 +85,11 @@ const deliveryAssignmentForm = document.getElementById('deliveryAssignmentForm')
 const deliveryExecName = document.getElementById('deliveryExecName');
 const deliveryExecPhone = document.getElementById('deliveryExecPhone');
 const deliveryExecCode = document.getElementById('deliveryExecCode');
+const deliveryExecutiveMsg = document.getElementById('deliveryExecutiveMsg');
 const deliveryBusinessDate = document.getElementById('deliveryBusinessDate');
 const deliveryRouteId = document.getElementById('deliveryRouteId');
 const deliveryExecutiveId = document.getElementById('deliveryExecutiveId');
+const deliveryAssignmentMsg = document.getElementById('deliveryAssignmentMsg');
 const deliveryModuleMsg = document.getElementById('deliveryModuleMsg');
 const deliveryExecutivesTable = document.getElementById('deliveryExecutivesTable');
 const deliveryAssignmentsTable = document.getElementById('deliveryAssignmentsTable');
@@ -129,6 +131,12 @@ let categories = [];
 let productsState = [];
 let ordersState = [];
 let routesState = [];
+let procurementRowsState = [];
+let inventoryRowsState = [];
+let packingRoutesState = [];
+let packingRouteDetailState = null;
+let customerRowsState = [];
+let routeBuildingRowsState = [];
 let deliveryMonitorRowsState = [];
 let deliveryMonitorLastKey = '';
 let toastTimer;
@@ -155,13 +163,42 @@ function normalizeBusinessDate(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function setMessage(el, message = '', type = 'muted') {
+  if (!el) return;
+  el.textContent = message;
+  el.classList.remove('muted', 'info', 'error');
+  el.classList.add(type);
+}
+
+function sanitizeIndianPhoneInput(input) {
+  if (!input) return;
+  let digits = input.value.replace(/\D/g, '');
+  if (digits.startsWith('91') && digits.length > 10) {
+    digits = digits.slice(2);
+  }
+  input.value = digits.slice(0, 10);
+}
+
+function normalizeIndianPhone(rawPhone) {
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  const local = digits.startsWith('91') && digits.length > 10 ? digits.slice(2) : digits;
+  if (!/^[6-9]\d{9}$/.test(local)) {
+    return null;
+  }
+  return `+91${local}`;
+}
+
 async function req(path, options = {}) {
-  pendingRequests += 1;
-  globalLoader?.classList.remove('hidden');
+  const showLoader = options.showLoader !== false;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 20000;
+  if (showLoader) {
+    pendingRequests += 1;
+    globalLoader?.classList.remove('hidden');
+  }
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const res = await fetch(path, {
@@ -181,9 +218,11 @@ async function req(path, options = {}) {
     throw error;
   } finally {
     clearTimeout(timeoutId);
-    pendingRequests = Math.max(0, pendingRequests - 1);
-    if (pendingRequests === 0) {
-      globalLoader?.classList.add('hidden');
+    if (showLoader) {
+      pendingRequests = Math.max(0, pendingRequests - 1);
+      if (pendingRequests === 0) {
+        globalLoader?.classList.add('hidden');
+      }
     }
   }
 }
@@ -194,6 +233,27 @@ function showToast(message, type = 'success') {
   toast.classList.remove('hidden', 'success', 'error');
   toast.classList.add(type);
   toastTimer = setTimeout(() => toast.classList.add('hidden'), 2500);
+}
+
+function downloadExportPayload(payload) {
+  if (!payload?.content_base64) {
+    showToast('Nothing to download', 'error');
+    return;
+  }
+  const binary = atob(payload.content_base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: payload.mime_type || 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = payload.filename || 'export.bin';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 function can(permissionCode) {
@@ -573,7 +633,12 @@ function renderDashboard() {
 
 async function loadProcurementSummary() {
   if (!can('purchase:read')) return;
-  const data = await req(`${API_BASE}/modules/procurement/summary`);
+  const businessDate = filterDate.value || localDateString();
+  const [data, detail] = await Promise.all([
+    req(`${API_BASE}/modules/procurement/summary`),
+    req(`${API_BASE}/modules/procurement/detail?business_date=${encodeURIComponent(businessDate)}`),
+  ]);
+  procurementRowsState = detail?.rows || [];
   const o = data?.overview || {};
   procurementSummary.innerHTML =
     renderSummaryCards([
@@ -581,23 +646,89 @@ async function loadProcurementSummary() {
       { k: 'Total Final Qty', v: fmtNum(o.total_qty, 3) },
       { k: 'Purchased', v: fmtNum(o.purchased_rows) },
     ]) +
+    `<div class="toolbar" style="margin-top:10px;">
+       <button class="btn btn-primary" id="generateProcurementBtn">Generate Summary</button>
+       <button class="btn btn-outline" id="exportProcurementCsvBtn">Download Excel CSV</button>
+       <button class="btn btn-outline" id="exportProcurementPdfBtn">Download PDF</button>
+     </div>` +
     renderInlineTable(
-      ['Product', 'Required', 'Wastage %', 'Final Qty', 'Supplier', 'Purchased'],
-      (data?.items || []).map((it) => [
-        it.name,
+      ['Product', 'Required', 'Wastage %', 'Final Qty', 'Supplier', 'Purchased', 'Action'],
+      procurementRowsState.map((it) => [
+        it.product_name,
         fmtNum(it.required_qty, 3),
         fmtNum(it.wastage_pct, 2),
         fmtNum(it.final_purchase_qty, 3),
         it.supplier_name || '-',
         it.purchased ? 'Yes' : 'No',
+        it.purchased ? '-' : `<button class="small-btn" data-purchase-row="${it.id}">Mark Purchased</button>`,
       ]),
     );
+
+  document.getElementById('generateProcurementBtn')?.addEventListener('click', async () => {
+    try {
+      await req(`${API_BASE}/modules/procurement/generate`, {
+        method: 'POST',
+        body: JSON.stringify({ business_date: businessDate }),
+      });
+      showToast('Purchase summary generated');
+      await loadProcurementSummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to generate summary', 'error');
+    }
+  });
+
+  document.getElementById('exportProcurementCsvBtn')?.addEventListener('click', async () => {
+    try {
+      const payload = await req(`${API_BASE}/modules/procurement/export?business_date=${encodeURIComponent(businessDate)}&format=CSV`);
+      downloadExportPayload(payload);
+    } catch (err) {
+      showToast(err.message || 'Failed to export CSV', 'error');
+    }
+  });
+
+  document.getElementById('exportProcurementPdfBtn')?.addEventListener('click', async () => {
+    try {
+      const payload = await req(`${API_BASE}/modules/procurement/export?business_date=${encodeURIComponent(businessDate)}&format=PDF`);
+      downloadExportPayload(payload);
+    } catch (err) {
+      showToast(err.message || 'Failed to export PDF', 'error');
+    }
+  });
+
+  procurementSummary.querySelectorAll('[data-purchase-row]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.purchaseRow);
+      if (!Number.isFinite(id) || id <= 0) return;
+      const supplierName = prompt('Supplier name for this purchase row?', 'Default Supplier');
+      if (supplierName == null) return;
+      try {
+        await req(`${API_BASE}/modules/procurement/mark-purchased/${id}`, {
+          method: 'POST',
+          body: JSON.stringify({ supplier_name: supplierName, purchase_date: businessDate }),
+        });
+        showToast('Purchase row marked purchased');
+        await loadProcurementSummary();
+      } catch (err) {
+        showToast(err.message || 'Failed to update purchase row', 'error');
+      }
+    });
+  });
 }
 
 async function loadInventorySummary() {
   if (!can('inventory:read')) return;
-  const data = await req(`${API_BASE}/modules/inventory/summary`);
+  const businessDate = filterDate.value || localDateString();
+  const [data, detail, products, receiptsData] = await Promise.all([
+    req(`${API_BASE}/modules/inventory/summary`),
+    req(`${API_BASE}/modules/inventory/items?business_date=${encodeURIComponent(businessDate)}`),
+    can('products:read') ? req(`${API_BASE}/products`) : Promise.resolve([]),
+    req(`${API_BASE}/modules/inventory/receipts`),
+  ]);
+  inventoryRowsState = detail?.rows || [];
+  const receiptRows = receiptsData?.receipts || [];
+  const qualityRows = receiptsData?.quality_checks || [];
   const o = data?.overview || {};
+  const productOptions = (products || []).map((p) => `<option value="${p.id}">${p.name}</option>`).join('');
   inventorySummary.innerHTML =
     renderSummaryCards([
       { k: 'Stock Rows (Today)', v: fmtNum(o.rows) },
@@ -605,20 +736,139 @@ async function loadInventorySummary() {
       { k: 'Low Stock Items', v: fmtNum(o.low_stock_items) },
       { k: 'Wastage Qty', v: fmtNum(o.total_wastage, 3) },
     ]) +
+    `<form id="inventoryReceiptForm" class="form-grid route-form-grid" style="margin-top:10px;">
+       <input id="receiptSupplier" placeholder="Supplier name" required />
+       <input id="receiptInvoice" placeholder="Invoice number" required />
+       <select id="receiptProductId" required><option value="">Select Product</option>${productOptions}</select>
+       <input id="receiptQuantity" type="number" min="0.001" step="0.001" placeholder="Qty" required />
+       <input id="receiptRate" type="number" min="0" step="0.01" placeholder="Rate / kg" required />
+       <button type="submit" class="btn btn-primary">Goods Received Entry</button>
+     </form>` +
+    `<form id="inventoryAdjustForm" class="form-grid route-form-grid" style="margin-top:10px;">
+       <select id="inventoryProductId" required><option value="">Select Product</option>${productOptions}</select>
+       <select id="inventoryOperation" required>
+         <option value="OPENING">Opening Stock</option>
+         <option value="PURCHASE">Purchased Qty</option>
+         <option value="ALLOCATE">Allocated Qty</option>
+         <option value="DAMAGED">Damaged Qty</option>
+         <option value="WASTAGE">Wastage Qty</option>
+       </select>
+       <input id="inventoryQuantity" type="number" min="0.001" step="0.001" placeholder="Quantity" required />
+       <button type="submit" class="btn btn-primary">Save Adjustment</button>
+     </form>` +
     renderInlineTable(
-      ['Product', 'Remaining', 'Threshold', 'Warehouse'],
-      (data?.low_stock || []).map((it) => [
-        it.name,
+      ['Product', 'Opening', 'Purchased', 'Allocated', 'Damaged', 'Wastage', 'Remaining', 'Warehouse'],
+      inventoryRowsState.map((it) => [
+        it.product_name,
+        fmtNum(it.opening_stock, 3),
+        fmtNum(it.purchased_qty, 3),
+        fmtNum(it.allocated_qty, 3),
+        fmtNum(it.damaged_qty, 3),
+        fmtNum(it.wastage_qty, 3),
         fmtNum(it.remaining_qty, 3),
-        fmtNum(it.low_stock_threshold, 3),
         it.warehouse_code,
       ]),
+    ) +
+    renderInlineTable(
+      ['Supplier', 'Invoice', 'Product', 'Received Qty', 'Rate', 'Status', 'Action'],
+      receiptRows.map((it) => [
+        it.supplier_name,
+        it.invoice_number,
+        it.product_name,
+        fmtNum(it.quantity_received, 3),
+        `₹${fmtNum(it.rate_per_kg, 2)}`,
+        it.quality_status,
+        it.quality_status === 'APPROVED'
+          ? 'Approved'
+          : `<button class="small-btn" data-quality-item="${it.goods_received_item_id}">Approve Quality</button>`,
+      ]),
+    ) +
+    renderInlineTable(
+      ['Product', 'Good', 'Damaged', 'Waste', 'Reason', 'Approved At'],
+      qualityRows.map((it) => [
+        it.product_name,
+        fmtNum(it.good_quantity, 3),
+        fmtNum(it.damaged_quantity, 3),
+        fmtNum(it.waste_quantity, 3),
+        it.damage_reason || '-',
+        it.approved_at ? new Date(it.approved_at).toLocaleString('en-IN') : '-',
+      ]),
     );
+
+  document.getElementById('inventoryReceiptForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await req(`${API_BASE}/modules/inventory/goods-received`, {
+        method: 'POST',
+        body: JSON.stringify({
+          supplier_name: document.getElementById('receiptSupplier').value.trim(),
+          invoice_number: document.getElementById('receiptInvoice').value.trim(),
+          product_id: Number(document.getElementById('receiptProductId').value),
+          quantity_received: Number(document.getElementById('receiptQuantity').value),
+          rate_per_kg: Number(document.getElementById('receiptRate').value),
+        }),
+      });
+      showToast('Goods receipt saved');
+      await loadInventorySummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to save goods receipt', 'error');
+    }
+  });
+
+  document.getElementById('inventoryAdjustForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await req(`${API_BASE}/modules/inventory/adjust`, {
+        method: 'POST',
+        body: JSON.stringify({
+          product_id: Number(document.getElementById('inventoryProductId').value),
+          operation: document.getElementById('inventoryOperation').value,
+          quantity: Number(document.getElementById('inventoryQuantity').value),
+        }),
+      });
+      showToast('Inventory updated');
+      await loadInventorySummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to update inventory', 'error');
+    }
+  });
+
+  inventorySummary.querySelectorAll('[data-quality-item]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const goodsReceivedItemId = Number(btn.dataset.qualityItem);
+      if (!Number.isFinite(goodsReceivedItemId) || goodsReceivedItemId <= 0) return;
+      const goodQuantity = Number(prompt('Good quantity', '0') || '0');
+      const damagedQuantity = Number(prompt('Damaged quantity', '0') || '0');
+      const wasteQuantity = Number(prompt('Waste quantity', '0') || '0');
+      const damageReason = prompt('Damage reason (optional)', '') || '';
+      try {
+        await req(`${API_BASE}/modules/inventory/quality-approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            goods_received_item_id: goodsReceivedItemId,
+            good_quantity: goodQuantity,
+            damaged_quantity: damagedQuantity,
+            waste_quantity: wasteQuantity,
+            damage_reason: damageReason || null,
+          }),
+        });
+        showToast('Quality approved');
+        await loadInventorySummary();
+      } catch (err) {
+        showToast(err.message || 'Failed to approve quality', 'error');
+      }
+    });
+  });
 }
 
 async function loadPackingSummary() {
   if (!can('packing:read')) return;
-  const data = await req(`${API_BASE}/modules/packing/summary`);
+  const businessDate = filterDate.value || localDateString();
+  const [data, routes] = await Promise.all([
+    req(`${API_BASE}/modules/packing/summary`),
+    req(`${API_BASE}/modules/packing/routes?business_date=${encodeURIComponent(businessDate)}`),
+  ]);
+  packingRoutesState = routes?.routes || [];
   const o = data?.overview || {};
   packingSummary.innerHTML =
     renderSummaryCards([
@@ -626,21 +876,122 @@ async function loadPackingSummary() {
       { k: 'Active Routes', v: fmtNum(o.active_routes) },
       { k: 'Crates Used', v: fmtNum(o.crates_used) },
     ]) +
+    `<div class="toolbar" style="margin-top:10px;">
+       <select id="packingRouteSelect">
+         <option value="">Select Route</option>
+         ${packingRoutesState.map((it) => `<option value="${it.id}">${it.route_code} (${it.sector_name || '-'})</option>`).join('')}
+       </select>
+       <button class="btn btn-outline" id="loadPackingRouteBtn">Load Route</button>
+       <button class="btn btn-outline" id="printPackingLabelsBtn">Print Labels</button>
+       <button class="btn btn-primary" id="packingSheetPdfBtn">Packing Sheet PDF</button>
+     </div>
+     <form id="packingBulkScanForm" class="form-grid route-form-grid" style="margin-top:10px;">
+       <input id="packingBarcode" placeholder="Barcode / Order code" required />
+       <button type="submit" class="btn btn-primary">Bulk Scan Pack</button>
+     </form>
+     <div id="packingRouteDetail" class="placeholder-box" style="margin-top:10px;"></div>` +
     renderInlineTable(
       ['Route', 'Packed Orders', 'Crates'],
       (data?.routes || []).map((it) => [it.route_code || '-', fmtNum(it.packed_orders), fmtNum(it.crate_count)]),
     );
+
+  const detailTarget = document.getElementById('packingRouteDetail');
+
+  async function loadSelectedPackingRoute() {
+    const routeId = Number(document.getElementById('packingRouteSelect').value);
+    if (!Number.isFinite(routeId) || routeId <= 0) {
+      detailTarget.innerHTML = '<div class="muted">Select a route to load route-wise packing details.</div>';
+      return;
+    }
+    const detail = await req(`${API_BASE}/modules/packing/route/${routeId}?business_date=${encodeURIComponent(businessDate)}`);
+    packingRouteDetailState = detail;
+    detailTarget.innerHTML =
+      renderInlineTable(
+        ['Item', 'Total Qty'],
+        (detail.item_summary || []).map((it) => [it.name, fmtNum(it.total_qty, 3)]),
+      ) +
+      renderInlineTable(
+        ['Seq', 'Order', 'Customer', 'Building / Flat', 'Print', 'Pack', 'Crate'],
+        (detail.orders || []).map((it) => [
+          fmtNum(it.route_sequence),
+          `#${it.id}`,
+          it.customer_name,
+          `${it.building_name || '-'} / ${it.flat || '-'}`,
+          (it.print_status || 'PLACED').replaceAll('_', ' '),
+          (it.packing_status || 'PLACED').replaceAll('_', ' '),
+          it.crate_number || '-',
+        ]),
+      );
+  }
+
+  document.getElementById('loadPackingRouteBtn')?.addEventListener('click', async () => {
+    try {
+      await loadSelectedPackingRoute();
+    } catch (err) {
+      detailTarget.innerHTML = `<div class="muted">${err.message || 'Failed to load route detail'}</div>`;
+    }
+  });
+
+  document.getElementById('printPackingLabelsBtn')?.addEventListener('click', async () => {
+    const routeId = Number(document.getElementById('packingRouteSelect').value);
+    if (!Number.isFinite(routeId) || routeId <= 0) return showToast('Select a route first', 'error');
+    try {
+      await req(`${API_BASE}/modules/packing/print-labels`, {
+        method: 'POST',
+        body: JSON.stringify({ route_id: routeId }),
+      });
+      showToast('Route labels printed');
+      await loadPackingSummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to print labels', 'error');
+    }
+  });
+
+  document.getElementById('packingSheetPdfBtn')?.addEventListener('click', async () => {
+    const routeId = Number(document.getElementById('packingRouteSelect').value);
+    if (!Number.isFinite(routeId) || routeId <= 0) return showToast('Select a route first', 'error');
+    try {
+      const payload = await req(
+        `${API_BASE}/modules/packing/export?route_id=${routeId}&business_date=${encodeURIComponent(businessDate)}&format=PDF`,
+      );
+      downloadExportPayload(payload);
+    } catch (err) {
+      showToast(err.message || 'Failed to prepare packing sheet', 'error');
+    }
+  });
+
+  document.getElementById('packingBulkScanForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const routeId = Number(document.getElementById('packingRouteSelect').value);
+    if (!Number.isFinite(routeId) || routeId <= 0) return showToast('Select a route first', 'error');
+    try {
+      await req(`${API_BASE}/modules/packing/bulk-scan`, {
+        method: 'POST',
+        body: JSON.stringify({
+          route_id: routeId,
+          barcode: document.getElementById('packingBarcode').value.trim(),
+        }),
+      });
+      document.getElementById('packingBarcode').value = '';
+      showToast('Order packed');
+      await loadSelectedPackingRoute();
+      await loadPackingSummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to pack order', 'error');
+    }
+  });
 }
 
 async function loadProcessingStaff() {
   if (!can('delivery:read')) return;
   const staff = await req(`${API_BASE}/processing/staff`);
   processingStaffTable.innerHTML = renderInlineTable(
-    ['Name', 'Phone', 'Code', 'Status', 'Last Login'],
+    ['Name', 'Phone', 'Code', 'Role', 'Status', 'Last Login'],
     (staff || []).map((s) => [
       s.name || '-',
       s.phone || '-',
       s.employee_code || '-',
+      (s.role_code || 'STORE_MANAGER').replaceAll('_', ' '),
       s.active ? 'Active' : 'Inactive',
       s.last_login_at ? new Date(s.last_login_at).toLocaleString('en-IN') : '-',
     ]),
@@ -659,10 +1010,19 @@ async function loadDeliverySummary() {
       { k: 'Not Available', v: fmtNum(o.not_available) },
       { k: 'Rescheduled', v: fmtNum(o.rescheduled) },
       { k: 'Cancelled', v: fmtNum(o.cancelled) },
+      { k: 'Cash Collected', v: `₹${fmtNum(o.cash_collected, 2)}` },
+      { k: 'UPI Collected', v: `₹${fmtNum(o.upi_collected, 2)}` },
+      { k: 'Settled Routes', v: fmtNum(o.settled_routes) },
     ]) +
     renderInlineTable(
-      ['Route', 'Total', 'Delivered'],
-      (data?.routes || []).map((it) => [it.route_code || '-', fmtNum(it.total), fmtNum(it.delivered)]),
+      ['Route', 'Total', 'Delivered', 'Collected', 'Settlement'],
+      (data?.routes || []).map((it) => [
+        it.route_code || '-',
+        fmtNum(it.total),
+        fmtNum(it.delivered),
+        `₹${fmtNum(it.collected_amount, 2)}`,
+        (it.assignment_status || 'UNASSIGNED').replaceAll('_', ' '),
+      ]),
     );
 
   const targetDate = deliveryBusinessDate?.value || localDateString();
@@ -740,24 +1100,38 @@ async function loadDeliverySummary() {
   );
 
   deliveryAssignmentsTable.innerHTML = renderInlineTable(
-    ['Date', 'Route', 'Sector', 'Executive', 'Status'],
+    ['Date', 'Route', 'Sector', 'Executive', 'Status', 'Cash Handover'],
     (assignments || []).map((a) => [
       (a.business_date || '').slice(0, 10),
       a.route_code || '-',
       a.sector_name || a.sector_code || '-',
       `${a.delivery_executive_name || '-'} (${a.delivery_executive_phone || '-'})`,
       (a.status || '-').replaceAll('_', ' '),
+      a.cash_handover_confirmed_at
+        ? `₹${fmtNum(a.cash_handover_amount, 2)} on ${new Date(a.cash_handover_confirmed_at).toLocaleString('en-IN')}`
+        : 'Pending',
     ]),
   );
 
   try {
-    await loadDeliveryRouteMonitor();
+    deliveryRouteMonitorTable.innerHTML = '<div class="muted">Loading route monitor...</div>';
+    setTimeout(() => {
+      loadDeliveryRouteMonitor().catch((err) => {
+        if (deliveryRouteMonitorTable) {
+          deliveryRouteMonitorTable.innerHTML = `<div class="muted">Failed to load route monitor: ${err.message || 'Unknown error'}</div>`;
+        }
+      });
+    }, 0);
   } catch (err) {
     if (deliveryRouteMonitorTable) {
       deliveryRouteMonitorTable.innerHTML = `<div class="muted">Failed to load route monitor: ${err.message || 'Unknown error'}</div>`;
     }
   }
-  deliveryModuleMsg.textContent = `Loaded ${fmtNum((executives || []).length)} executives and ${fmtNum((assignments || []).length)} assignments for ${targetDate}.`;
+  setMessage(
+    deliveryModuleMsg,
+    `Snapshot for ${targetDate}: ${fmtNum((executives || []).length)} executives and ${fmtNum((assignments || []).length)} route assignments loaded.`,
+    'info',
+  );
 }
 
 async function loadDeliveryRouteMonitor() {
@@ -778,6 +1152,7 @@ async function loadDeliveryRouteMonitor() {
 
   deliveryMonitorRowsState = await req(
     `${API_BASE}/delivery/route-monitor?${qs.toString()}`,
+    { showLoader: false, timeoutMs: 8000 },
   );
   deliveryMonitorLastKey = fetchKey;
   renderDeliveryRouteMonitorTable();
@@ -797,6 +1172,8 @@ function renderDeliveryRouteMonitorTable() {
       'Packed',
       'Out for Delivery',
       'Delivered',
+      'Collected',
+      'Settlement',
       'Action',
     ],
     (deliveryMonitorRowsState || []).map((r) => [
@@ -811,6 +1188,10 @@ function renderDeliveryRouteMonitorTable() {
       fmtNum(r.packed_orders),
       fmtNum(r.out_for_delivery),
       fmtNum(r.delivered_orders),
+      `₹${fmtNum(r.collected_amount, 2)}`,
+      r.cash_handover_confirmed_at
+        ? `Done (${new Date(r.cash_handover_confirmed_at).toLocaleString('en-IN')})`
+        : ((r.assignment_status || 'UNASSIGNED').replaceAll('_', ' ')),
       (r.assignment_status || '').toUpperCase() === 'COMPLETED' && r.assignment_id
         ? `<button class="small-btn" data-reopen-assignment="${r.assignment_id}">Reopen Route</button>`
         : '-',
@@ -857,14 +1238,66 @@ async function loadAccountingSummary() {
 
 async function loadCustomersSummary() {
   if (!can('customers:read')) return;
-  const data = await req(`${API_BASE}/modules/customers/summary`);
+  const [data, rows] = await Promise.all([
+    req(`${API_BASE}/modules/customers/summary`),
+    req(`${API_BASE}/modules/customers`),
+  ]);
+  customerRowsState = rows || [];
   const o = data?.overview || {};
   customersSummary.innerHTML =
     renderSummaryCards([{ k: 'Total Customers', v: fmtNum(o.total_customers) }]) +
+    `<div class="toolbar" style="margin-top:10px;">
+       <button class="btn btn-outline" id="reloadCustomersBtn">Reload Customers</button>
+     </div>` +
     renderInlineTable(
-      ['Name', 'Phone', 'Orders', 'Revenue'],
-      (data?.top_customers || []).map((it) => [it.name || '-', it.phone || '-', fmtNum(it.total_orders), `₹${fmtNum(it.revenue, 2)}`]),
+      ['Name', 'Phone', 'Sector / Building', 'Credit', 'Blocked', 'Orders', 'Revenue', 'Actions'],
+      customerRowsState.map((it) => [
+        it.full_name || '-',
+        it.phone || '-',
+        `${it.sector_name || '-'} / ${it.building_name || '-'}`,
+        fmtNum(it.credit_points),
+        it.blocked ? 'Yes' : 'No',
+        fmtNum(it.total_orders),
+        `₹${fmtNum(it.revenue, 2)}`,
+        `<button class="small-btn" data-credit-customer="${it.id}">Adjust Credit</button>
+         <button class="small-btn ${it.blocked ? '' : 'danger'}" data-block-customer="${it.id}" data-blocked="${it.blocked ? 'true' : 'false'}">${it.blocked ? 'Unblock' : 'Block'}</button>`,
+      ]),
     );
+
+  customersSummary.querySelectorAll('[data-credit-customer]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.creditCustomer);
+      const points = Number(prompt('Enter credit points adjustment (+/-)', '10'));
+      if (!Number.isFinite(points)) return;
+      try {
+        await req(`${API_BASE}/modules/customers/${id}/credit`, {
+          method: 'POST',
+          body: JSON.stringify({ points }),
+        });
+        showToast('Customer credit updated');
+        await loadCustomersSummary();
+      } catch (err) {
+        showToast(err.message || 'Failed to update credit', 'error');
+      }
+    });
+  });
+
+  customersSummary.querySelectorAll('[data-block-customer]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = Number(btn.dataset.blockCustomer);
+      const blocked = btn.dataset.blocked === 'true';
+      try {
+        await req(`${API_BASE}/modules/customers/${id}/block`, {
+          method: 'POST',
+          body: JSON.stringify({ blocked: !blocked }),
+        });
+        showToast(!blocked ? 'Customer blocked' : 'Customer unblocked');
+        await loadCustomersSummary();
+      } catch (err) {
+        showToast(err.message || 'Failed to update customer', 'error');
+      }
+    });
+  });
 }
 
 async function loadRoutesModule() {
@@ -872,6 +1305,8 @@ async function loadRoutesModule() {
   const data = await req(`${API_BASE}/modules/routes`);
   const sectors = data?.sectors || [];
   const routes = data?.routes || [];
+  const buildingRows = await req(`${API_BASE}/modules/routes/buildings`);
+  routeBuildingRowsState = buildingRows || [];
   routesState = routes;
 
   routeSectorId.innerHTML = sectors.length
@@ -883,19 +1318,127 @@ async function loadRoutesModule() {
       { k: 'Total Sectors', v: fmtNum(sectors.length) },
       { k: 'Total Routes', v: fmtNum(routes.length) },
     ]) +
+    `<div class="toolbar" style="margin-top:10px;">
+       <button class="btn btn-primary" id="runCutoffWorkflowBtn">Run 9 PM Cutoff Workflow</button>
+       <button class="btn btn-outline" id="autoAssignBuildingsBtn">Auto Assign Buildings</button>
+     </div>
+     <form id="routeBuildingMapForm" class="form-grid route-form-grid" style="margin-top:10px;">
+       <select id="mapRouteId"><option value="">Select Route</option>${routes.map((r) => `<option value="${r.id}">${r.route_code}</option>`).join('')}</select>
+       <select id="mapBuildingId"><option value="">Select Building</option>${routeBuildingRowsState.map((b) => `<option value="${b.id}">${b.sector_name || b.sector_code || '-'} / ${b.name}</option>`).join('')}</select>
+       <input id="mapBuildingStop" type="number" min="1" value="1" />
+       <button type="submit" class="btn btn-primary">Map Building</button>
+     </form>` +
     renderInlineTable(
-      ['Route', 'Sector', 'Max Orders', 'Buildings', 'Status'],
-      routes.map((r) => [r.route_code, r.sector_name || r.sector_code, fmtNum(r.max_orders), fmtNum(r.buildings_mapped), r.active ? 'Active' : 'Inactive']),
+      ['Route', 'Sector', 'Max Orders', 'Buildings', 'Crates', 'Optimized', 'Orders', 'ETA', 'Distance', 'Status'],
+      routes.map((r) => [
+        r.route_code,
+        r.sector_name || r.sector_code,
+        fmtNum(r.max_orders),
+        fmtNum(r.buildings_mapped),
+        fmtNum(r.crate_count),
+        r.optimized ? 'Yes' : 'No',
+        fmtNum(r.total_orders),
+        r.estimated_time_minutes ? `${fmtNum(r.estimated_time_minutes)} min` : '-',
+        r.total_distance_km ? `${fmtNum(r.total_distance_km, 1)} km` : '-',
+        r.active ? 'Active' : 'Inactive',
+      ]),
+    ) +
+    renderInlineTable(
+      ['Building', 'Sector', 'Mapped Route', 'Stop Sequence'],
+      routeBuildingRowsState.map((b) => [
+        `${b.name} (${b.code})`,
+        b.sector_name || b.sector_code || '-',
+        b.route_code || 'Unmapped',
+        b.stop_sequence ?? '-',
+      ]),
     );
+
+  document.getElementById('runCutoffWorkflowBtn')?.addEventListener('click', async () => {
+    try {
+      await req(`${API_BASE}/jobs/run-cutoff`, {
+        method: 'POST',
+        body: JSON.stringify({ business_date: filterDate.value || localDateString() }),
+      });
+      showToast('Cutoff workflow completed');
+      await loadRoutesModule();
+      await loadProcurementSummary();
+    } catch (err) {
+      showToast(err.message || 'Failed to run cutoff workflow', 'error');
+    }
+  });
+
+  document.getElementById('autoAssignBuildingsBtn')?.addEventListener('click', async () => {
+    const sectorId = Number(routeSectorId.value);
+    if (!Number.isFinite(sectorId) || sectorId <= 0) return showToast('Select a sector first', 'error');
+    try {
+      await req(`${API_BASE}/modules/routes/auto-assign-buildings`, {
+        method: 'POST',
+        body: JSON.stringify({ sector_id: sectorId }),
+      });
+      showToast('Buildings auto-assigned');
+      await loadRoutesModule();
+    } catch (err) {
+      showToast(err.message || 'Failed to auto-assign buildings', 'error');
+    }
+  });
+
+  document.getElementById('routeBuildingMapForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      await req(`${API_BASE}/modules/routes/map-building`, {
+        method: 'POST',
+        body: JSON.stringify({
+          route_id: Number(document.getElementById('mapRouteId').value),
+          building_id: Number(document.getElementById('mapBuildingId').value),
+          stop_sequence: Number(document.getElementById('mapBuildingStop').value),
+        }),
+      });
+      showToast('Building mapped');
+      await loadRoutesModule();
+    } catch (err) {
+      showToast(err.message || 'Failed to map building', 'error');
+    }
+  });
 }
 
 async function loadReportsModule() {
   if (!can('reports:read')) return;
   const rows = await req(`${API_BASE}/modules/reports`);
-  reportsSummary.innerHTML = renderInlineTable(
-    ['Type', 'Business Date', 'Storage', 'Generated'],
-    (rows || []).map((r) => [r.report_type, (r.business_date || '').slice(0, 10), r.storage_url || '-', new Date(r.created_at).toLocaleString('en-IN')]),
-  );
+  reportsSummary.innerHTML =
+    `<div class="toolbar" style="margin-bottom:10px;">
+       <select id="reportTypeSelect">
+         <option value="DAILY_SALES_REPORT">Daily Sales Report</option>
+         <option value="PRODUCT_DEMAND_REPORT">Product Demand Report</option>
+         <option value="DELIVERY_TIME_REPORT">Delivery Time Report</option>
+       </select>
+       <select id="reportFormatSelect">
+         <option value="CSV">Excel CSV</option>
+         <option value="PDF">PDF</option>
+       </select>
+       <button class="btn btn-primary" id="generateReportBtn">Generate Report</button>
+     </div>` +
+    renderInlineTable(
+      ['Type', 'Business Date', 'Storage', 'Generated'],
+      (rows || []).map((r) => [r.report_type, (r.business_date || '').slice(0, 10), r.storage_url || '-', new Date(r.created_at).toLocaleString('en-IN')]),
+    );
+
+  document.getElementById('generateReportBtn')?.addEventListener('click', async () => {
+    try {
+      const payload = await req(`${API_BASE}/modules/reports/generate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          report_type: document.getElementById('reportTypeSelect').value,
+          format: document.getElementById('reportFormatSelect').value,
+          business_date: filterDate.value || localDateString(),
+        }),
+      });
+      downloadExportPayload(payload);
+      showToast('Report generated');
+      await loadReportsModule();
+    } catch (err) {
+      showToast(err.message || 'Failed to generate report', 'error');
+    }
+  });
 }
 
 async function loadNotificationsModule() {
@@ -1235,21 +1778,26 @@ productForm.addEventListener('submit', async (e) => {
 
 deliveryExecutiveForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  setMessage(deliveryExecutiveMsg);
+  setMessage(deliveryModuleMsg);
   const rawName = deliveryExecName.value.trim();
+  sanitizeIndianPhoneInput(deliveryExecPhone);
   const rawPhone = deliveryExecPhone.value.trim();
-  const code = deliveryExecCode.value.trim();
+  const code = deliveryExecCode.value.trim().toUpperCase();
 
   if (rawName.length < 2) {
-    deliveryModuleMsg.textContent = 'Executive name must be at least 2 characters.';
+    setMessage(deliveryExecutiveMsg, 'Executive name must be at least 2 characters.', 'error');
     return;
   }
-
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length !== 10 && digits.length !== 12) {
-    deliveryModuleMsg.textContent = 'Phone must be a valid Indian mobile number.';
+  if (!/^[a-zA-Z][a-zA-Z\s.'-]{1,59}$/.test(rawName)) {
+    setMessage(deliveryExecutiveMsg, 'Enter a valid executive name using letters only.', 'error');
     return;
   }
-  const normalized = digits.length === 10 ? `+91${digits}` : `+${digits}`;
+  const normalized = normalizeIndianPhone(rawPhone);
+  if (!normalized) {
+    setMessage(deliveryExecutiveMsg, 'Enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.', 'error');
+    return;
+  }
 
   try {
     await req(`${API_BASE}/delivery/executives`, {
@@ -1264,30 +1812,35 @@ deliveryExecutiveForm?.addEventListener('submit', async (e) => {
     deliveryExecName.value = '';
     deliveryExecPhone.value = '';
     deliveryExecCode.value = '';
+    setMessage(deliveryExecutiveMsg, 'Delivery executive added successfully.', 'info');
     showToast('Delivery executive created');
     await loadDeliverySummary();
   } catch (err) {
-    deliveryModuleMsg.textContent = err.message;
+    setMessage(deliveryExecutiveMsg, err.message, 'error');
+    showToast(err.message || 'Failed to create executive', 'error');
   }
 });
 
 processingStaffForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
   const rawName = processingStaffName.value.trim();
+  sanitizeIndianPhoneInput(processingStaffPhone);
   const rawPhone = processingStaffPhone.value.trim();
-  const code = processingStaffCode.value.trim();
+  const code = processingStaffCode.value.trim().toUpperCase();
 
   if (rawName.length < 2) {
     processingStaffMsg.textContent = 'Staff name must be at least 2 characters.';
     return;
   }
-
-  const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length !== 10 && digits.length !== 12) {
-    processingStaffMsg.textContent = 'Phone must be a valid Indian mobile number.';
+  if (!/^[a-zA-Z][a-zA-Z\s.'-]{1,59}$/.test(rawName)) {
+    processingStaffMsg.textContent = 'Enter a valid staff name using letters only.';
     return;
   }
-  const normalized = digits.length === 10 ? `+91${digits}` : `+${digits}`;
+  const normalized = normalizeIndianPhone(rawPhone);
+  if (!normalized) {
+    processingStaffMsg.textContent = 'Enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.';
+    return;
+  }
 
   try {
     await req(`${API_BASE}/processing/staff`, {
@@ -1312,20 +1865,22 @@ processingStaffForm?.addEventListener('submit', async (e) => {
 
 deliveryAssignmentForm?.addEventListener('submit', async (e) => {
   e.preventDefault();
+  setMessage(deliveryAssignmentMsg);
+  setMessage(deliveryModuleMsg);
   const businessDate = normalizeBusinessDate(deliveryBusinessDate.value);
   const routeId = Number(deliveryRouteId.value);
   const executiveId = Number(deliveryExecutiveId.value);
 
   if (!businessDate) {
-    deliveryModuleMsg.textContent = 'Business date is required.';
+    setMessage(deliveryAssignmentMsg, 'Business date is required.', 'error');
     return;
   }
   if (!Number.isFinite(routeId) || routeId <= 0) {
-    deliveryModuleMsg.textContent = 'Select a valid route.';
+    setMessage(deliveryAssignmentMsg, 'Select a valid route.', 'error');
     return;
   }
   if (!Number.isFinite(executiveId) || executiveId <= 0) {
-    deliveryModuleMsg.textContent = 'Select a valid delivery executive.';
+    setMessage(deliveryAssignmentMsg, 'Select a valid delivery executive.', 'error');
     return;
   }
 
@@ -1338,12 +1893,17 @@ deliveryAssignmentForm?.addEventListener('submit', async (e) => {
         delivery_executive_id: executiveId,
       }),
     });
+    setMessage(deliveryAssignmentMsg, 'Route assigned successfully.', 'info');
     showToast('Route assigned successfully');
     await loadDeliverySummary();
   } catch (err) {
-    deliveryModuleMsg.textContent = err.message;
+    setMessage(deliveryAssignmentMsg, err.message, 'error');
+    showToast(err.message || 'Failed to assign route', 'error');
   }
 });
+
+deliveryExecPhone?.addEventListener('input', () => sanitizeIndianPhoneInput(deliveryExecPhone));
+processingStaffPhone?.addEventListener('input', () => sanitizeIndianPhoneInput(processingStaffPhone));
 
 deliveryBusinessDate?.addEventListener('change', loadDeliverySummary);
 deliveryMonitorSector?.addEventListener('change', async () => {

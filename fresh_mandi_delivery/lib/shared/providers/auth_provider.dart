@@ -25,7 +25,10 @@ class AuthProvider extends ChangeNotifier {
     return true;
   }
 
-  Future<void> requestOtp({required String phone, required String deviceId}) async {
+  Future<void> requestOtp({
+    required String phone,
+    required String deviceId,
+  }) async {
     loading = true;
     error = null;
     notifyListeners();
@@ -64,6 +67,7 @@ class AuthProvider extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    error = null;
     await _repo.logout();
     user = null;
     notifyListeners();

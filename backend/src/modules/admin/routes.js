@@ -15,6 +15,7 @@ import { ok, fail } from '../../utils/response.js';
 import { getUploadsDir } from '../../utils/uploads.js';
 import { isCloudinaryConfigured, uploadImageToCloudinary } from '../../utils/cloudinary.js';
 import { normalizeIndianPhone } from '../../utils/sms.js';
+import { getNumericSetting } from '../../utils/settings.js';
 
 export const adminRouter = express.Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,6 +82,242 @@ const createRouteSchema = z.object({
   max_orders: z.coerce.number().int().positive().default(120),
   sequence_logic: z.string().min(2).max(80).default('tower_then_flat'),
 });
+
+const procurementActionSchema = z.object({
+  business_date: z.string().optional(),
+});
+
+const inventoryAdjustSchema = z.object({
+  product_id: z.coerce.number().int().positive(),
+  warehouse_code: z.string().min(2).max(40).default('WH-01'),
+  operation: z.enum(['OPENING', 'PURCHASE', 'ALLOCATE', 'DAMAGED', 'WASTAGE']),
+  quantity: z.coerce.number().positive(),
+  low_stock_threshold: z.coerce.number().nonnegative().optional(),
+});
+
+const goodsReceiptSchema = z.object({
+  supplier_name: z.string().min(2).max(160),
+  invoice_number: z.string().min(2).max(80),
+  product_id: z.coerce.number().int().positive(),
+  quantity_received: z.coerce.number().positive(),
+  rate_per_kg: z.coerce.number().nonnegative(),
+});
+
+const qualityApprovalSchema = z.object({
+  goods_received_item_id: z.coerce.number().int().positive(),
+  good_quantity: z.coerce.number().nonnegative(),
+  damaged_quantity: z.coerce.number().nonnegative(),
+  waste_quantity: z.coerce.number().nonnegative(),
+  damage_reason: z.string().max(300).optional().nullable(),
+});
+
+const packingScanSchema = z.object({
+  route_id: z.coerce.number().int().positive(),
+  barcode: z.string().min(1),
+});
+
+const printRouteLabelsSchema = z.object({
+  route_id: z.coerce.number().int().positive(),
+});
+
+const customerCreditSchema = z.object({
+  points: z.coerce.number().int(),
+});
+
+const customerBlockSchema = z.object({
+  blocked: z.boolean(),
+});
+
+const routeBuildingSchema = z.object({
+  route_id: z.coerce.number().int().positive(),
+  building_id: z.coerce.number().int().positive(),
+  stop_sequence: z.coerce.number().int().positive().default(1),
+});
+
+const reportGenerateSchema = z.object({
+  report_type: z.string().min(3).max(80),
+  business_date: z.string().optional(),
+  format: z.enum(['CSV', 'PDF']).default('CSV'),
+});
+
+function normalizeBusinessDate(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return new Date().toISOString().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function barcodeToOrderId(raw) {
+  const text = `${raw ?? ''}`.trim();
+  if (!text) return null;
+  const direct = Number(text);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const match = text.match(/(\d+)/);
+  if (!match) return null;
+  const id = Number(match[1]);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+function escapeCsv(value) {
+  const text = `${value ?? ''}`;
+  if (!/[",\n]/.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function csvExportPayload({ filename, headers, rows }) {
+  const csv = [headers.map(escapeCsv).join(','), ...rows.map((row) => row.map(escapeCsv).join(','))].join('\n');
+  return {
+    filename,
+    mime_type: 'text/csv',
+    content_base64: Buffer.from(csv, 'utf8').toString('base64'),
+  };
+}
+
+function buildSimplePdfBuffer(title, lines) {
+  const escapePdf = (input) => `${input ?? ''}`.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  const streamLines = [
+    'BT',
+    '/F1 16 Tf',
+    '50 780 Td',
+    `(${escapePdf(title)}) Tj`,
+    '/F1 10 Tf',
+  ];
+  let cursorY = 760;
+  for (const line of lines.slice(0, 55)) {
+    streamLines.push(`1 0 0 1 50 ${cursorY} Tm`);
+    streamLines.push(`(${escapePdf(line)}) Tj`);
+    cursorY -= 12;
+  }
+  streamLines.push('ET');
+  const stream = streamLines.join('\n');
+  const objects = [];
+  const pushObject = (body) => {
+    objects.push(body);
+    return objects.length;
+  };
+  pushObject('<< /Type /Catalog /Pages 2 0 R >>');
+  pushObject('<< /Type /Pages /Kids [3 0 R] /Count 1 >>');
+  pushObject('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>');
+  pushObject(`<< /Length ${Buffer.byteLength(stream, 'utf8')} >>\nstream\n${stream}\nendstream`);
+  pushObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  let pdf = '%PDF-1.4\n';
+  const offsets = [0];
+  for (let i = 0; i < objects.length; i += 1) {
+    offsets.push(Buffer.byteLength(pdf, 'utf8'));
+    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf, 'utf8');
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (let i = 1; i < offsets.length; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return Buffer.from(pdf, 'utf8');
+}
+
+function pdfExportPayload({ filename, title, lines }) {
+  return {
+    filename,
+    mime_type: 'application/pdf',
+    content_base64: buildSimplePdfBuffer(title, lines).toString('base64'),
+  };
+}
+
+async function generatePurchaseSummaryForDate(client, businessDate, adminUserId) {
+  const wastagePct = await getNumericSetting('procurement_wastage_pct', 5);
+  const rows = await client.query(
+    `SELECT oi.product_id,
+            COALESCE(SUM(oi.quantity), 0)::numeric(12,3) AS required_qty
+     FROM orders o
+     JOIN order_items oi ON oi.order_id = o.id
+     WHERE DATE(o.created_at) = $1::date
+       AND COALESCE(o.status, '') <> 'CANCELLED'
+     GROUP BY oi.product_id`,
+    [businessDate],
+  );
+
+  await client.query('DELETE FROM purchase_summary WHERE business_date = $1::date', [businessDate]);
+
+  for (const row of rows.rows) {
+    const requiredQty = Number(row.required_qty ?? 0);
+    const finalPurchaseQty = Number((requiredQty * (1 + Number(wastagePct) / 100)).toFixed(3));
+    await client.query(
+      `INSERT INTO purchase_summary (
+         business_date, product_id, required_qty, wastage_pct, final_purchase_qty, updated_by
+       )
+       VALUES ($1::date, $2, $3, $4, $5, $6)`,
+      [businessDate, row.product_id, requiredQty, wastagePct, finalPurchaseQty, adminUserId],
+    );
+  }
+
+  return rows.rows.length;
+}
+
+async function runCutoffWorkflow(adminUserId, businessDateInput) {
+  const businessDate = normalizeBusinessDate(businessDateInput);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query(
+      `WITH ranked AS (
+         SELECT o.id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY o.route_id
+                  ORDER BY COALESCE(o.building_id, 0), COALESCE(o.floor_number, 0), COALESCE(o.flat_number, ''), o.id
+                )::int AS next_sequence
+         FROM orders o
+         WHERE DATE(o.created_at) = $1::date
+           AND o.route_id IS NOT NULL
+       )
+       UPDATE orders o
+       SET route_sequence = r.next_sequence,
+           stop_number = r.next_sequence,
+           updated_at = NOW(),
+           updated_by = $2
+       FROM ranked r
+       WHERE o.id = r.id`,
+      [businessDate, adminUserId],
+    );
+
+    const purchaseRows = await generatePurchaseSummaryForDate(client, businessDate, adminUserId);
+
+    await client.query(
+      `INSERT INTO reports (report_type, business_date, storage_url, generated_by, updated_by)
+       VALUES ('PACKING_SHEET_DATA', $1::date, $2, $3, $3)
+       ON CONFLICT (report_type, business_date)
+       DO UPDATE SET storage_url = EXCLUDED.storage_url, generated_by = EXCLUDED.generated_by, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+      [businessDate, `inline:packing-sheet:${businessDate}`, adminUserId],
+    );
+
+    await client.query('COMMIT');
+    return { businessDate, purchaseRows };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function maybeAutoRunCutoff(adminUserId) {
+  const cutoffHour = await getNumericSetting('cutoff_hour', env.cutOffHour);
+  const now = new Date();
+  if (now.getHours() < cutoffHour) return null;
+  const businessDate = now.toISOString().slice(0, 10);
+  const existing = await pool.query(
+    `SELECT 1
+     FROM purchase_summary
+     WHERE business_date = $1::date
+     LIMIT 1`,
+    [businessDate],
+  );
+  if (existing.rowCount) return null;
+  return runCutoffWorkflow(adminUserId, businessDate);
+}
 
 function adminOnly(req, res, next) {
   if (req.user?.role !== 'admin') {
@@ -261,6 +498,7 @@ adminRouter.get('/rbac/admin-users', requirePermission('users:manage_roles'), as
 });
 
 adminRouter.get('/dashboard', requirePermission('dashboard:read'), async (_req, res) => {
+  await maybeAutoRunCutoff(_req.user.sub);
   const [users, orders, products, categories, revenue, recentOrders] = await Promise.all([
     pool.query('SELECT COUNT(*)::int AS count FROM users'),
     pool.query('SELECT COUNT(*)::int AS count FROM orders'),
@@ -380,6 +618,7 @@ adminRouter.delete('/products/:id', requirePermission('products:write'), async (
 });
 
 adminRouter.get('/orders', requirePermission('orders:read'), async (req, res) => {
+  await maybeAutoRunCutoff(req.user.sub);
   const { status, business_date, sector_id, route_id } = req.query;
   const rows = await pool.query(
     `SELECT o.*,
@@ -466,6 +705,7 @@ adminRouter.patch('/orders/:id/status', requirePermission('orders:update_status'
 });
 
 adminRouter.get('/modules/procurement/summary', requirePermission('purchase:read'), async (_req, res) => {
+  await maybeAutoRunCutoff(_req.user.sub);
   const todaySummary = await pool.query(
     `SELECT COUNT(*)::int AS rows,
             COALESCE(SUM(final_purchase_qty),0)::numeric(12,3) AS total_qty,
@@ -491,6 +731,115 @@ adminRouter.get('/modules/procurement/summary', requirePermission('purchase:read
   return ok(res, { overview: todaySummary.rows[0], items: top.rows });
 });
 
+adminRouter.post('/modules/procurement/generate', requirePermission('purchase:write'), async (req, res) => {
+  const parsed = procurementActionSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return fail(res, 400, 'Invalid procurement payload');
+
+  const client = await pool.connect();
+  try {
+    const businessDate = normalizeBusinessDate(parsed.data.business_date);
+    await client.query('BEGIN');
+    const count = await generatePurchaseSummaryForDate(client, businessDate, req.user.sub);
+    await client.query('COMMIT');
+    return ok(res, { business_date: businessDate, rows_generated: count }, 'Purchase summary generated');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Failed to generate purchase summary: ${error.message}`);
+  } finally {
+    client.release();
+  }
+});
+
+adminRouter.get('/modules/procurement/detail', requirePermission('purchase:read'), async (req, res) => {
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+  const rows = await pool.query(
+    `SELECT ps.id, ps.business_date, ps.product_id, p.name AS product_name,
+            ps.required_qty, ps.wastage_pct, ps.final_purchase_qty,
+            COALESCE(ps.supplier_name, '-') AS supplier_name,
+            ps.purchase_cost, ps.purchase_date, ps.invoice_url, ps.purchased
+     FROM purchase_summary ps
+     JOIN products p ON p.id = ps.product_id
+     WHERE ps.business_date = $1::date
+     ORDER BY p.name ASC`,
+    [businessDate],
+  );
+  return ok(res, { business_date: businessDate, rows: rows.rows });
+});
+
+adminRouter.post('/modules/procurement/mark-purchased/:id', requirePermission('purchase:write'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return fail(res, 400, 'Invalid purchase summary id');
+
+  const payload = z.object({
+    supplier_name: z.string().min(2).max(120).optional().nullable(),
+    purchase_cost: z.coerce.number().nonnegative().optional().nullable(),
+    invoice_url: z.string().max(400).optional().nullable(),
+    purchase_date: z.string().optional().nullable(),
+  }).safeParse(req.body ?? {});
+  if (!payload.success) return fail(res, 400, 'Invalid purchase update payload');
+
+  const data = payload.data;
+  const updated = await pool.query(
+    `UPDATE purchase_summary
+     SET purchased = TRUE,
+         supplier_name = COALESCE($2, supplier_name),
+         purchase_cost = COALESCE($3, purchase_cost),
+         invoice_url = COALESCE($4, invoice_url),
+         purchase_date = COALESCE($5::date, purchase_date, CURRENT_DATE),
+         updated_at = NOW(),
+         updated_by = $6
+     WHERE id = $1
+     RETURNING *`,
+    [
+      id,
+      data.supplier_name ?? null,
+      data.purchase_cost ?? null,
+      data.invoice_url ?? null,
+      data.purchase_date ? normalizeBusinessDate(data.purchase_date) : null,
+      req.user.sub,
+    ],
+  );
+  if (!updated.rowCount) return fail(res, 404, 'Purchase summary row not found');
+  return ok(res, updated.rows[0], 'Purchase row marked purchased');
+});
+
+adminRouter.get('/modules/procurement/export', requirePermission('purchase:read'), async (req, res) => {
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+  const format = `${req.query.format ?? 'CSV'}`.toUpperCase();
+  const rows = await pool.query(
+    `SELECT p.name AS product_name, ps.required_qty, ps.wastage_pct, ps.final_purchase_qty,
+            COALESCE(ps.supplier_name, '-') AS supplier_name, ps.purchased
+     FROM purchase_summary ps
+     JOIN products p ON p.id = ps.product_id
+     WHERE ps.business_date = $1::date
+     ORDER BY p.name ASC`,
+    [businessDate],
+  );
+  const headers = ['Product', 'Required Qty', 'Wastage %', 'Final Purchase Qty', 'Supplier', 'Purchased'];
+  const dataRows = rows.rows.map((row) => [
+    row.product_name,
+    row.required_qty,
+    row.wastage_pct,
+    row.final_purchase_qty,
+    row.supplier_name,
+    row.purchased ? 'Yes' : 'No',
+  ]);
+
+  const payload = format === 'PDF'
+    ? pdfExportPayload({
+        filename: `purchase-summary-${businessDate}.pdf`,
+        title: `Purchase Summary ${businessDate}`,
+        lines: [headers.join(' | '), ...dataRows.map((row) => row.join(' | '))],
+      })
+    : csvExportPayload({
+        filename: `purchase-summary-${businessDate}.csv`,
+        headers,
+        rows: dataRows,
+      });
+
+  return ok(res, payload);
+});
+
 adminRouter.get('/modules/inventory/summary', requirePermission('inventory:read'), async (_req, res) => {
   const overview = await pool.query(
     `SELECT COUNT(*)::int AS rows,
@@ -512,6 +861,203 @@ adminRouter.get('/modules/inventory/summary', requirePermission('inventory:read'
   );
 
   return ok(res, { overview: overview.rows[0], low_stock: lowStock.rows });
+});
+
+adminRouter.get('/modules/inventory/items', requirePermission('inventory:read'), async (req, res) => {
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+  const rows = await pool.query(
+    `SELECT i.*, p.name AS product_name
+     FROM inventory i
+     JOIN products p ON p.id = i.product_id
+     WHERE i.stock_date = $1::date
+     ORDER BY p.name ASC`,
+    [businessDate],
+  );
+  return ok(res, { business_date: businessDate, rows: rows.rows });
+});
+
+adminRouter.get('/modules/inventory/receipts', requirePermission('inventory:read'), async (_req, res) => {
+  const receipts = await pool.query(
+    `SELECT gr.id, gr.supplier_name, gr.invoice_number, gr.total_cost, gr.status, gr.received_at,
+            gri.id AS goods_received_item_id, p.name AS product_name, gri.quantity_received, gri.rate_per_kg, gri.quality_status
+     FROM goods_received gr
+     JOIN goods_received_items gri ON gri.goods_received_id = gr.id
+     JOIN products p ON p.id = gri.product_id
+     ORDER BY gr.received_at DESC, gr.id DESC
+     LIMIT 30`,
+  );
+  const quality = await pool.query(
+    `SELECT qc.id, qc.goods_received_item_id, p.name AS product_name, qc.good_quantity, qc.damaged_quantity, qc.waste_quantity,
+            qc.damage_reason, qc.approved_at
+     FROM quality_checks qc
+     JOIN products p ON p.id = qc.product_id
+     ORDER BY qc.approved_at DESC
+     LIMIT 30`,
+  );
+  return ok(res, { receipts: receipts.rows, quality_checks: quality.rows });
+});
+
+adminRouter.post('/modules/inventory/goods-received', requirePermission('inventory:write'), async (req, res) => {
+  const parsed = goodsReceiptSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid goods received payload');
+  const p = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const totalCost = Number((Number(p.quantity_received) * Number(p.rate_per_kg)).toFixed(2));
+    const receipt = await client.query(
+      `INSERT INTO goods_received (supplier_name, invoice_number, total_cost, status)
+       VALUES ($1, $2, $3, 'AWAITING_QUALITY_CHECK')
+       ON CONFLICT (invoice_number)
+       DO UPDATE SET supplier_name = EXCLUDED.supplier_name, total_cost = goods_received.total_cost + EXCLUDED.total_cost, updated_at = NOW()
+       RETURNING id`,
+      [p.supplier_name, p.invoice_number, totalCost],
+    );
+
+    await client.query(
+      `INSERT INTO goods_received_items (goods_received_id, product_id, quantity_received, rate_per_kg, total_cost)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [receipt.rows[0].id, p.product_id, p.quantity_received, p.rate_per_kg, totalCost],
+    );
+    await client.query('COMMIT');
+    return ok(res, true, 'Goods receipt saved');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Goods receipt failed: ${error.message}`);
+  } finally {
+    client.release();
+  }
+});
+
+adminRouter.post('/modules/inventory/quality-approve', requirePermission('inventory:write'), async (req, res) => {
+  const parsed = qualityApprovalSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid quality approval payload');
+  const p = parsed.data;
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const item = await client.query(
+      `SELECT gri.id, gri.goods_received_id, gri.product_id, gri.quantity_received, gr.invoice_number
+       FROM goods_received_items gri
+       JOIN goods_received gr ON gr.id = gri.goods_received_id
+       WHERE gri.id = $1`,
+      [p.goods_received_item_id],
+    );
+    if (!item.rowCount) {
+      await client.query('ROLLBACK');
+      return fail(res, 404, 'Goods received item not found');
+    }
+
+    await client.query(
+      `INSERT INTO quality_checks (goods_received_item_id, product_id, good_quantity, damaged_quantity, waste_quantity, damage_reason)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [p.goods_received_item_id, item.rows[0].product_id, p.good_quantity, p.damaged_quantity, p.waste_quantity, p.damage_reason ?? null],
+    );
+
+    await client.query(
+      `UPDATE goods_received_items
+       SET quality_status = 'APPROVED',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [p.goods_received_item_id],
+    );
+
+    await client.query(
+      `INSERT INTO inventory (product_id, warehouse_code, stock_date, purchased_qty, damaged_qty, wastage_qty, remaining_qty, quality_check_approved, updated_by)
+       VALUES ($1, 'WH-01', CURRENT_DATE, $2, $3, $4, $2, TRUE, $5)
+       ON CONFLICT (product_id, warehouse_code, stock_date)
+       DO UPDATE SET
+         purchased_qty = inventory.purchased_qty + EXCLUDED.purchased_qty,
+         damaged_qty = inventory.damaged_qty + EXCLUDED.damaged_qty,
+         wastage_qty = inventory.wastage_qty + EXCLUDED.wastage_qty,
+         remaining_qty = GREATEST(0, inventory.remaining_qty + EXCLUDED.purchased_qty - EXCLUDED.damaged_qty - EXCLUDED.wastage_qty),
+         quality_check_approved = TRUE,
+         updated_at = NOW(),
+         updated_by = EXCLUDED.updated_by`,
+      [item.rows[0].product_id, p.good_quantity, p.damaged_quantity, p.waste_quantity, req.user.sub],
+    );
+
+    await client.query(
+      `UPDATE goods_received
+       SET status = 'APPROVED_FOR_PACKING',
+           updated_at = NOW()
+       WHERE id = $1`,
+      [item.rows[0].goods_received_id],
+    );
+    await client.query('COMMIT');
+    return ok(res, true, 'Quality approved and inventory updated');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Quality approval failed: ${error.message}`);
+  } finally {
+    client.release();
+  }
+});
+
+adminRouter.post('/modules/inventory/adjust', requirePermission('inventory:write'), async (req, res) => {
+  const parsed = inventoryAdjustSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid inventory adjustment payload');
+
+  const p = parsed.data;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO inventory (product_id, warehouse_code, stock_date, low_stock_threshold, updated_by)
+       VALUES ($1, $2, CURRENT_DATE, COALESCE($3, 0), $4)
+       ON CONFLICT (product_id, warehouse_code, stock_date)
+       DO NOTHING`,
+      [p.product_id, p.warehouse_code, p.low_stock_threshold ?? 0, req.user.sub],
+    );
+
+    const columnByOperation = {
+      OPENING: 'opening_stock',
+      PURCHASE: 'purchased_qty',
+      ALLOCATE: 'allocated_qty',
+      DAMAGED: 'damaged_qty',
+      WASTAGE: 'wastage_qty',
+    };
+    const column = columnByOperation[p.operation];
+    await client.query(
+      `UPDATE inventory
+       SET ${column} = ${column} + $4,
+           low_stock_threshold = COALESCE($5, low_stock_threshold),
+           remaining_qty = GREATEST(
+             0,
+             opening_stock + purchased_qty + CASE WHEN $3 = 'OPENING' THEN $4 ELSE 0 END + CASE WHEN $3 = 'PURCHASE' THEN $4 ELSE 0 END
+             - allocated_qty - CASE WHEN $3 = 'ALLOCATE' THEN $4 ELSE 0 END
+             - damaged_qty - CASE WHEN $3 = 'DAMAGED' THEN $4 ELSE 0 END
+             - wastage_qty - CASE WHEN $3 = 'WASTAGE' THEN $4 ELSE 0 END
+           ),
+           updated_at = NOW(),
+           updated_by = $6
+       WHERE product_id = $1
+         AND warehouse_code = $2
+         AND stock_date = CURRENT_DATE
+       RETURNING *`,
+      [p.product_id, p.warehouse_code, p.operation, Number(p.quantity), p.low_stock_threshold ?? null, req.user.sub],
+    );
+
+    const latest = await client.query(
+      `SELECT i.*, p.name AS product_name
+       FROM inventory i
+       JOIN products p ON p.id = i.product_id
+       WHERE i.product_id = $1
+         AND i.warehouse_code = $2
+         AND i.stock_date = CURRENT_DATE`,
+      [p.product_id, p.warehouse_code],
+    );
+
+    await client.query('COMMIT');
+    return ok(res, latest.rows[0], 'Inventory updated');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Inventory adjustment failed: ${error.message}`);
+  } finally {
+    client.release();
+  }
 });
 
 adminRouter.get('/modules/packing/summary', requirePermission('packing:read'), async (_req, res) => {
@@ -538,23 +1084,235 @@ adminRouter.get('/modules/packing/summary', requirePermission('packing:read'), a
   return ok(res, { overview: overview.rows[0], routes: routes.rows });
 });
 
+adminRouter.get('/modules/packing/routes', requirePermission('packing:read'), async (req, res) => {
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+  const routes = await pool.query(
+    `SELECT r.id, r.route_code, s.name AS sector_name,
+            COUNT(o.id)::int AS total_orders,
+            COUNT(*) FILTER (WHERE COALESCE(o.packing_status::text, 'PLACED') = 'PACKED')::int AS packed_orders
+     FROM routes r
+     JOIN sectors s ON s.id = r.sector_id
+     LEFT JOIN orders o
+       ON o.route_id = r.id
+      AND DATE(o.created_at) = $1::date
+     WHERE r.active = TRUE
+     GROUP BY r.id, r.route_code, s.name
+     ORDER BY s.name ASC, r.route_code ASC`,
+    [businessDate],
+  );
+  return ok(res, { business_date: businessDate, routes: routes.rows });
+});
+
+adminRouter.get('/modules/packing/route/:id', requirePermission('packing:read'), async (req, res) => {
+  const routeId = Number(req.params.id);
+  if (!Number.isFinite(routeId) || routeId <= 0) return fail(res, 400, 'Invalid route id');
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+
+  const orders = await pool.query(
+    `SELECT o.id, o.route_sequence, o.customer_ref, o.total, o.print_status, o.packing_status,
+            u.name AS customer_name, b.name AS building_name, a.line1 AS flat,
+            COALESCE(o.crate_number, '-') AS crate_number
+     FROM orders o
+     JOIN users u ON u.id = o.user_id
+     JOIN addresses a ON a.id = o.address_id
+     LEFT JOIN buildings b ON b.id = o.building_id
+     WHERE o.route_id = $1
+       AND DATE(o.created_at) = $2::date
+     ORDER BY COALESCE(o.route_sequence, o.id) ASC, o.id ASC`,
+    [routeId, businessDate],
+  );
+
+  const itemSummary = await pool.query(
+    `SELECT p.name, COALESCE(SUM(oi.quantity),0)::numeric(12,3) AS total_qty
+     FROM orders o
+     JOIN order_items oi ON oi.order_id = o.id
+     JOIN products p ON p.id = oi.product_id
+     WHERE o.route_id = $1
+       AND DATE(o.created_at) = $2::date
+     GROUP BY p.name
+     ORDER BY p.name ASC`,
+    [routeId, businessDate],
+  );
+
+  const crates = await pool.query(
+    `SELECT crate_code, stop_from, stop_to, max_capacity, current_orders
+     FROM route_crates
+     WHERE route_id = $1
+     ORDER BY crate_code ASC`,
+    [routeId],
+  );
+
+  return ok(res, {
+    business_date: businessDate,
+    orders: orders.rows,
+    item_summary: itemSummary.rows,
+    crates: crates.rows,
+  });
+});
+
+adminRouter.get('/modules/packing/export', requirePermission('packing:read'), async (req, res) => {
+  const routeId = Number(req.query.route_id);
+  if (!Number.isFinite(routeId) || routeId <= 0) return fail(res, 400, 'Invalid route id');
+  const businessDate = normalizeBusinessDate(req.query.business_date);
+  const format = `${req.query.format ?? 'PDF'}`.toUpperCase();
+
+  const routeMeta = await pool.query('SELECT route_code FROM routes WHERE id = $1', [routeId]);
+  const routeCode = routeMeta.rows[0]?.route_code ?? `route-${routeId}`;
+  const detail = await pool.query(
+    `SELECT COALESCE(o.route_sequence, o.id)::int AS sequence,
+            COALESCE(u.name, '-') AS customer_name,
+            COALESCE(b.name, '-') AS building_name,
+            COALESCE(a.line1, '-') AS flat,
+            COALESCE(o.crate_number, '-') AS crate_number
+     FROM orders o
+     JOIN users u ON u.id = o.user_id
+     JOIN addresses a ON a.id = o.address_id
+     LEFT JOIN buildings b ON b.id = o.building_id
+     WHERE o.route_id = $1
+       AND DATE(o.created_at) = $2::date
+     ORDER BY sequence ASC`,
+    [routeId, businessDate],
+  );
+
+  const headers = ['Sequence', 'Customer', 'Building', 'Flat', 'Crate'];
+  const rows = detail.rows.map((row) => [
+    row.sequence,
+    row.customer_name,
+    row.building_name,
+    row.flat,
+    row.crate_number,
+  ]);
+
+  const payload = format === 'CSV'
+    ? csvExportPayload({
+        filename: `packing-sheet-${routeCode}-${businessDate}.csv`,
+        headers,
+        rows,
+      })
+    : pdfExportPayload({
+        filename: `packing-sheet-${routeCode}-${businessDate}.pdf`,
+        title: `Packing Sheet ${routeCode} ${businessDate}`,
+        lines: [headers.join(' | '), ...rows.map((row) => row.join(' | '))],
+      });
+
+  return ok(res, payload);
+});
+
+adminRouter.post('/modules/packing/print-labels', requirePermission('packing:write'), async (req, res) => {
+  const parsed = printRouteLabelsSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid payload');
+
+  const updated = await pool.query(
+    `UPDATE orders
+     SET print_status = 'PRINTED',
+         printed_at = NOW(),
+         updated_at = NOW(),
+         updated_by = $2
+     WHERE route_id = $1
+       AND DATE(created_at) = CURRENT_DATE
+     RETURNING id`,
+    [parsed.data.route_id, req.user.sub],
+  );
+  return ok(res, { printed_orders: updated.rowCount }, 'Route labels printed');
+});
+
+adminRouter.post('/modules/packing/bulk-scan', requirePermission('packing:write'), async (req, res) => {
+  const parsed = packingScanSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid payload');
+  const orderId = barcodeToOrderId(parsed.data.barcode);
+  if (!orderId) return fail(res, 400, 'Invalid barcode');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const order = await client.query(
+      `SELECT id, route_id, crate_number
+       FROM orders
+       WHERE id = $1
+         AND route_id = $2
+         AND DATE(created_at) = CURRENT_DATE`,
+      [orderId, parsed.data.route_id],
+    );
+    if (!order.rowCount) {
+      await client.query('ROLLBACK');
+      return fail(res, 404, 'Order not found on this route');
+    }
+
+    await client.query(
+      `UPDATE orders
+       SET packing_status = 'PACKED',
+           packed_at = NOW(),
+           packed_by = $2,
+           status = 'PACKED',
+           updated_at = NOW(),
+           updated_by = $2
+       WHERE id = $1`,
+      [orderId, req.user.sub],
+    );
+    await client.query(
+      `INSERT INTO packing_log (order_id, route_id, crate_number, barcode_value, packed_by, processing_staff_id, status, updated_by)
+       VALUES ($1, $2, $3, $4, $5, NULL, 'PACKED', $5)`,
+      [orderId, parsed.data.route_id, order.rows[0].crate_number ?? null, parsed.data.barcode, req.user.sub],
+    );
+    await client.query('COMMIT');
+    return ok(res, { order_id: orderId }, 'Packing scan recorded');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Bulk scan failed: ${error.message}`);
+  } finally {
+    client.release();
+  }
+});
+
 adminRouter.get('/modules/delivery/summary', requirePermission('delivery:read'), async (_req, res) => {
   const overview = await pool.query(
     `SELECT COUNT(*)::int AS logs_today,
             COUNT(*) FILTER (WHERE status = 'DELIVERED')::int AS delivered,
             COUNT(*) FILTER (WHERE status = 'NOT_AVAILABLE')::int AS not_available,
             COUNT(*) FILTER (WHERE status = 'RESCHEDULED')::int AS rescheduled,
-            COUNT(*) FILTER (WHERE status = 'CANCELLED')::int AS cancelled
+            COUNT(*) FILTER (WHERE status = 'CANCELLED')::int AS cancelled,
+            COALESCE(
+              SUM(o.total) FILTER (
+                WHERE COALESCE(o.payment_status::text, 'PENDING') = 'PAID'
+                  AND COALESCE(o.payment_mode, 'CASH') IN ('CASH', 'COD')
+              ),
+              0
+            )::numeric(12,2) AS cash_collected,
+            COALESCE(
+              SUM(o.total) FILTER (
+                WHERE COALESCE(o.payment_status::text, 'PENDING') = 'PAID'
+                  AND COALESCE(o.payment_mode, 'UPI') = 'UPI'
+              ),
+              0
+            )::numeric(12,2) AS upi_collected,
+            COUNT(*) FILTER (
+              WHERE a.status = 'SETTLEMENT_DONE'
+            )::int AS settled_routes
      FROM delivery_log
-     WHERE DATE(created_at) = CURRENT_DATE`,
+     LEFT JOIN orders o ON o.id = delivery_log.order_id
+     LEFT JOIN delivery_route_assignments a
+       ON a.route_id = delivery_log.route_id
+      AND a.business_date = delivery_log.business_date
+     WHERE DATE(delivery_log.created_at) = CURRENT_DATE`,
   );
 
   const byRoute = await pool.query(
     `SELECT COALESCE(r.route_code, '-') AS route_code,
             COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE dl.status = 'DELIVERED')::int AS delivered
+            COUNT(*) FILTER (WHERE dl.status = 'DELIVERED')::int AS delivered,
+            COALESCE(
+              SUM(o.total) FILTER (
+                WHERE COALESCE(o.payment_status::text, 'PENDING') = 'PAID'
+              ),
+              0
+            )::numeric(12,2) AS collected_amount,
+            COALESCE(MAX(a.status::text), 'UNASSIGNED') AS assignment_status
      FROM delivery_log dl
      LEFT JOIN routes r ON r.id = dl.route_id
+     LEFT JOIN orders o ON o.id = dl.order_id
+     LEFT JOIN delivery_route_assignments a
+       ON a.route_id = dl.route_id
+      AND a.business_date = dl.business_date
      WHERE DATE(dl.created_at) = CURRENT_DATE
      GROUP BY r.route_code
      ORDER BY total DESC
@@ -605,19 +1363,161 @@ adminRouter.get('/modules/customers/summary', requirePermission('customers:read'
   return ok(res, { overview: overview.rows[0], top_customers: topCustomers.rows });
 });
 
+adminRouter.get('/modules/customers', requirePermission('customers:read'), async (req, res) => {
+  const queryText = `${req.query.q ?? ''}`.trim();
+  const rows = await pool.query(
+    `SELECT c.id, c.full_name, c.phone, c.credit_points, c.blocked,
+            sec.name AS sector_name, b.name AS building_name,
+            COUNT(o.id)::int AS total_orders,
+            COALESCE(SUM(o.total),0)::numeric(12,2) AS revenue
+     FROM customers c
+     LEFT JOIN sectors sec ON sec.id = c.sector_id
+     LEFT JOIN buildings b ON b.id = c.building_id
+     LEFT JOIN orders o ON o.user_id = c.user_id
+     WHERE ($1::text IS NULL OR LOWER(c.full_name) LIKE LOWER('%' || $1 || '%') OR c.phone LIKE '%' || $1 || '%')
+     GROUP BY c.id, sec.name, b.name
+     ORDER BY c.full_name ASC`,
+    [queryText || null],
+  );
+  return ok(res, rows.rows);
+});
+
+adminRouter.post('/modules/customers/:id/block', requirePermission('customers:write'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return fail(res, 400, 'Invalid customer id');
+  const parsed = customerBlockSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid customer block payload');
+
+  const updated = await pool.query(
+    `UPDATE customers
+     SET blocked = $2,
+         updated_at = NOW(),
+         updated_by = $3
+     WHERE id = $1
+     RETURNING *`,
+    [id, parsed.data.blocked, req.user.sub],
+  );
+  if (!updated.rowCount) return fail(res, 404, 'Customer not found');
+  return ok(res, updated.rows[0], parsed.data.blocked ? 'Customer blocked' : 'Customer unblocked');
+});
+
+adminRouter.post('/modules/customers/:id/credit', requirePermission('customers:write'), async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return fail(res, 400, 'Invalid customer id');
+  const parsed = customerCreditSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid customer credit payload');
+
+  const updated = await pool.query(
+    `UPDATE customers
+     SET credit_points = credit_points + $2,
+         updated_at = NOW(),
+         updated_by = $3
+     WHERE id = $1
+     RETURNING *`,
+    [id, parsed.data.points, req.user.sub],
+  );
+  if (!updated.rowCount) return fail(res, 404, 'Customer not found');
+  return ok(res, updated.rows[0], 'Customer credit updated');
+});
+
 adminRouter.get('/modules/routes', requirePermission('routes:read'), async (_req, res) => {
+  await maybeAutoRunCutoff(_req.user.sub);
   const sectors = await pool.query('SELECT id, code, name FROM sectors ORDER BY code ASC');
   const routes = await pool.query(
     `SELECT r.id, r.route_code, r.max_orders, r.sequence_logic, r.active,
+            r.optimized, r.total_orders, r.total_distance_km, r.estimated_time_minutes, r.generated_at,
             s.code AS sector_code, s.name AS sector_name,
-            COUNT(rb.building_id)::int AS buildings_mapped
+            COUNT(DISTINCT rb.building_id)::int AS buildings_mapped,
+            COUNT(DISTINCT rc.id)::int AS crate_count
      FROM routes r
      JOIN sectors s ON s.id = r.sector_id
      LEFT JOIN route_buildings rb ON rb.route_id = r.id
+     LEFT JOIN route_crates rc ON rc.route_id = r.id
      GROUP BY r.id, s.code, s.name
      ORDER BY r.route_code ASC`,
   );
   return ok(res, { sectors: sectors.rows, routes: routes.rows });
+});
+
+adminRouter.get('/modules/routes/buildings', requirePermission('routes:read'), async (req, res) => {
+  const sectorId = Number(req.query.sector_id);
+  const rows = await pool.query(
+    `SELECT b.id, b.name, b.code, s.name AS sector_name, s.code AS sector_code,
+            rb.route_id, r.route_code, rb.stop_sequence
+     FROM buildings b
+     JOIN sectors s ON s.id = b.sector_id
+     LEFT JOIN route_buildings rb ON rb.building_id = b.id
+     LEFT JOIN routes r ON r.id = rb.route_id
+     WHERE ($1::int IS NULL OR b.sector_id = $1::int)
+     ORDER BY s.code ASC, b.name ASC`,
+    [Number.isFinite(sectorId) && sectorId > 0 ? sectorId : null],
+  );
+  return ok(res, rows.rows);
+});
+
+adminRouter.post('/modules/routes/map-building', requirePermission('routes:write'), async (req, res) => {
+  const parsed = routeBuildingSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid route building payload');
+  const p = parsed.data;
+  await pool.query(
+    `INSERT INTO route_buildings (route_id, building_id, stop_sequence, created_by)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (route_id, building_id)
+     DO UPDATE SET stop_sequence = EXCLUDED.stop_sequence`,
+    [p.route_id, p.building_id, p.stop_sequence, req.user.sub],
+  );
+  return ok(res, true, 'Building mapped to route');
+});
+
+adminRouter.post('/modules/routes/auto-assign-buildings', requirePermission('routes:write'), async (req, res) => {
+  const sectorId = Number(req.body?.sector_id);
+  if (!Number.isFinite(sectorId) || sectorId <= 0) return fail(res, 400, 'Invalid sector id');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const routes = await client.query(
+      `SELECT r.id, COUNT(rb.building_id)::int AS mapped_count
+       FROM routes r
+       LEFT JOIN route_buildings rb ON rb.route_id = r.id
+       WHERE r.sector_id = $1
+       GROUP BY r.id
+       ORDER BY mapped_count ASC, r.id ASC`,
+      [sectorId],
+    );
+    if (!routes.rowCount) {
+      await client.query('ROLLBACK');
+      return fail(res, 404, 'No routes found for this sector');
+    }
+    const buildings = await client.query(
+      `SELECT b.id
+       FROM buildings b
+       LEFT JOIN route_buildings rb ON rb.building_id = b.id
+       WHERE b.sector_id = $1
+         AND rb.building_id IS NULL
+       ORDER BY b.id ASC`,
+      [sectorId],
+    );
+    let pointer = 0;
+    for (const building of buildings.rows) {
+      const route = routes.rows[pointer % routes.rows.length];
+      await client.query(
+        `INSERT INTO route_buildings (route_id, building_id, stop_sequence, created_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT DO NOTHING`,
+        [route.id, building.id, route.mapped_count + 1, req.user.sub],
+      );
+      route.mapped_count += 1;
+      pointer += 1;
+    }
+    await client.query('COMMIT');
+    return ok(res, { mapped_buildings: buildings.rowCount }, 'Buildings auto-assigned');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return fail(res, 500, `Auto-assign failed: ${error.message}`);
+  } finally {
+    client.release();
+  }
 });
 
 adminRouter.post('/modules/routes', requirePermission('routes:write'), async (req, res) => {
@@ -642,6 +1542,79 @@ adminRouter.get('/modules/reports', requirePermission('reports:read'), async (_r
      LIMIT 30`,
   );
   return ok(res, rows.rows);
+});
+
+adminRouter.post('/modules/reports/generate', requirePermission('reports:read'), async (req, res) => {
+  const parsed = reportGenerateSchema.safeParse(req.body);
+  if (!parsed.success) return fail(res, 400, 'Invalid report payload');
+  const businessDate = normalizeBusinessDate(parsed.data.business_date);
+  const type = parsed.data.report_type.toUpperCase();
+  let headers = [];
+  let rows = [];
+
+  if (type === 'DAILY_SALES_REPORT') {
+    const result = await pool.query(
+      `SELECT o.id, COALESCE(u.name, '-') AS customer_name, o.total, o.status
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.user_id
+       WHERE DATE(o.created_at) = $1::date
+       ORDER BY o.id ASC`,
+      [businessDate],
+    );
+    headers = ['Order ID', 'Customer', 'Total', 'Status'];
+    rows = result.rows.map((row) => [row.id, row.customer_name, row.total, row.status]);
+  } else if (type === 'PRODUCT_DEMAND_REPORT') {
+    const result = await pool.query(
+      `SELECT p.name, COALESCE(SUM(oi.quantity),0)::numeric(12,3) AS demand_qty
+       FROM orders o
+       JOIN order_items oi ON oi.order_id = o.id
+       JOIN products p ON p.id = oi.product_id
+       WHERE DATE(o.created_at) = $1::date
+       GROUP BY p.name
+       ORDER BY demand_qty DESC, p.name ASC`,
+      [businessDate],
+    );
+    headers = ['Product', 'Demand Qty'];
+    rows = result.rows.map((row) => [row.name, row.demand_qty]);
+  } else if (type === 'DELIVERY_TIME_REPORT') {
+    const result = await pool.query(
+      `SELECT COALESCE(r.route_code, '-') AS route_code,
+              COUNT(*) FILTER (WHERE COALESCE(o.delivery_status::text, 'PLACED') = 'DELIVERED')::int AS delivered_orders
+       FROM routes r
+       LEFT JOIN orders o
+         ON o.route_id = r.id
+        AND DATE(o.created_at) = $1::date
+       GROUP BY r.route_code
+       ORDER BY r.route_code ASC`,
+      [businessDate],
+    );
+    headers = ['Route', 'Delivered Orders'];
+    rows = result.rows.map((row) => [row.route_code, row.delivered_orders]);
+  } else {
+    return fail(res, 400, 'Unsupported report type');
+  }
+
+  const exportPayload = parsed.data.format === 'PDF'
+    ? pdfExportPayload({
+        filename: `${type.toLowerCase()}-${businessDate}.pdf`,
+        title: `${type.replaceAll('_', ' ')} ${businessDate}`,
+        lines: [headers.join(' | '), ...rows.map((row) => row.join(' | '))],
+      })
+    : csvExportPayload({
+        filename: `${type.toLowerCase()}-${businessDate}.csv`,
+        headers,
+        rows,
+      });
+
+  await pool.query(
+    `INSERT INTO reports (report_type, business_date, storage_url, generated_by, updated_by)
+     VALUES ($1, $2::date, $3, $4, $4)
+     ON CONFLICT (report_type, business_date)
+     DO UPDATE SET storage_url = EXCLUDED.storage_url, generated_by = EXCLUDED.generated_by, updated_by = EXCLUDED.updated_by, updated_at = NOW()`,
+    [type, businessDate, `inline:${type}:${businessDate}:${parsed.data.format}`, req.user.sub],
+  );
+
+  return ok(res, exportPayload, 'Report generated');
 });
 
 adminRouter.get('/modules/notifications', requirePermission('dashboard:read'), async (_req, res) => {
@@ -675,6 +1648,23 @@ adminRouter.put('/settings', requirePermission('settings:write'), async (req, re
 adminRouter.post('/jobs/night-reminder', requirePermission('orders:freeze'), async (_req, res) => {
   await queueNightReminderForAllUsers();
   return ok(res, true, 'Night reminder queued');
+});
+
+adminRouter.post('/jobs/run-cutoff', requirePermission('orders:freeze'), async (req, res) => {
+  try {
+    const businessDate = normalizeBusinessDate(req.body?.business_date);
+    const result = await runCutoffWorkflow(req.user.sub, businessDate);
+    return ok(
+      res,
+      {
+        business_date: result.businessDate,
+        purchase_rows: result.purchaseRows,
+      },
+      'Cutoff workflow completed',
+    );
+  } catch (error) {
+    return fail(res, 500, `Cutoff workflow failed: ${error.message}`);
+  }
 });
 
 adminRouter.get('/delivery/executives', requirePermission('delivery:read'), async (_req, res) => {
@@ -721,7 +1711,7 @@ adminRouter.post('/delivery/executives', requirePermission('delivery:write'), as
 
 adminRouter.get('/processing/staff', requirePermission('delivery:read'), async (_req, res) => {
   const rows = await pool.query(
-    `SELECT id, name, phone, employee_code, device_id, active, last_login_at, created_at, updated_at
+    `SELECT id, name, phone, employee_code, role_code, device_id, active, last_login_at, created_at, updated_at
      FROM processing_staff
      ORDER BY id DESC`,
   );
@@ -777,6 +1767,7 @@ adminRouter.get('/delivery/assignments', requirePermission('delivery:read'), asy
   const date = `${req.query.business_date ?? ''}` || null;
   const rows = await pool.query(
     `SELECT a.id, a.business_date, a.status, a.route_start_time, a.route_end_time,
+            a.cash_handover_confirmed_at, a.cash_handover_amount, a.cash_handover_notes,
             r.id AS route_id, r.route_code,
             s.name AS sector_name, s.code AS sector_code,
             d.id AS delivery_executive_id, d.name AS delivery_executive_name, d.phone AS delivery_executive_phone
@@ -808,12 +1799,20 @@ adminRouter.get('/delivery/route-monitor', requirePermission('delivery:read'), a
         a.status AS assignment_status,
         a.route_start_time,
         a.route_end_time,
+        a.cash_handover_confirmed_at,
+        a.cash_handover_amount,
         d.name AS delivery_executive_name,
         d.phone AS delivery_executive_phone,
         COUNT(o.id)::int AS total_orders,
         COUNT(*) FILTER (WHERE COALESCE(o.packing_status::text, 'PLACED') = 'PACKED')::int AS packed_orders,
         COUNT(*) FILTER (WHERE COALESCE(o.delivery_status::text, 'PENDING') = 'OUT_FOR_DELIVERY')::int AS out_for_delivery,
         COUNT(*) FILTER (WHERE COALESCE(o.delivery_status::text, 'PENDING') = 'DELIVERED')::int AS delivered_orders,
+        COALESCE(
+          SUM(o.total) FILTER (
+            WHERE COALESCE(o.payment_status::text, 'PENDING') = 'PAID'
+          ),
+          0
+        )::numeric(12,2) AS collected_amount,
         COUNT(*) FILTER (
           WHERE COALESCE(o.delivery_status::text, 'PENDING') NOT IN ('DELIVERED','CANCELLED')
             AND o.failure_reason IS NULL
@@ -831,7 +1830,20 @@ adminRouter.get('/delivery/route-monitor', requirePermission('delivery:read'), a
      WHERE r.active = TRUE
        AND ($2::int IS NULL OR s.id = $2::int)
        AND ($3::int IS NULL OR r.id = $3::int)
-     GROUP BY r.id, r.route_code, s.id, s.code, s.name, a.status, a.route_start_time, a.route_end_time, d.name, d.phone
+     GROUP BY
+       a.id,
+       r.id,
+       r.route_code,
+       s.id,
+       s.code,
+       s.name,
+       a.status,
+       a.route_start_time,
+       a.route_end_time,
+       a.cash_handover_confirmed_at,
+       a.cash_handover_amount,
+       d.name,
+       d.phone
      ORDER BY s.code ASC, r.route_code ASC`,
     [
       businessDate,

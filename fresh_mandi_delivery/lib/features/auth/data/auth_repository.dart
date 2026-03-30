@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/network/api_client.dart';
 import '../../../core/storage/secure_store.dart';
@@ -41,7 +42,19 @@ class AuthRepository {
     );
   }
 
-  Future<void> logout() => SecureStore.clearSession();
+  Future<void> logout() async {
+    try {
+      await ApiClient.dio.post('/delivery/logout');
+    } on DioException {
+      // Clear local session even if the network call fails.
+    } finally {
+      await SecureStore.clearSession();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('user_name');
+      await prefs.remove('user_phone');
+      await prefs.remove('user_id');
+    }
+  }
 
   Future<bool> hasSession() async {
     final token = await SecureStore.read(SecureStore.keyToken);

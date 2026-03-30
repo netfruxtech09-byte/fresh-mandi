@@ -280,11 +280,22 @@ CREATE TABLE IF NOT EXISTS routes (
   sector_id INT NOT NULL REFERENCES sectors(id),
   max_orders INT NOT NULL DEFAULT 120,
   sequence_logic VARCHAR(80) NOT NULL DEFAULT 'tower_then_flat',
+  optimized BOOLEAN NOT NULL DEFAULT FALSE,
+  total_orders INT NOT NULL DEFAULT 0,
+  total_distance_km NUMERIC(10,2) NOT NULL DEFAULT 0,
+  estimated_time_minutes INT NOT NULL DEFAULT 0,
+  generated_at TIMESTAMP,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_by INT REFERENCES admin_users(id)
 );
+
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS optimized BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS total_orders INT NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS total_distance_km NUMERIC(10,2) NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS estimated_time_minutes INT NOT NULL DEFAULT 0;
+ALTER TABLE routes ADD COLUMN IF NOT EXISTS generated_at TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS route_buildings (
   route_id INT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
@@ -382,7 +393,8 @@ CREATE TABLE IF NOT EXISTS inventory (
   stock_date DATE NOT NULL DEFAULT CURRENT_DATE,
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-  updated_by INT REFERENCES admin_users(id)
+  updated_by INT REFERENCES admin_users(id),
+  UNIQUE (product_id, warehouse_code, stock_date)
 );
 
 CREATE TABLE IF NOT EXISTS packing_log (
@@ -458,6 +470,7 @@ CREATE TABLE IF NOT EXISTS processing_staff (
   name VARCHAR(120) NOT NULL,
   phone VARCHAR(15) NOT NULL UNIQUE,
   employee_code VARCHAR(40) UNIQUE,
+  role_code VARCHAR(40) NOT NULL DEFAULT 'STORE_MANAGER',
   device_id VARCHAR(160),
   active BOOLEAN NOT NULL DEFAULT TRUE,
   last_login_at TIMESTAMP,
@@ -466,10 +479,114 @@ CREATE TABLE IF NOT EXISTS processing_staff (
   updated_by INT REFERENCES admin_users(id)
 );
 
+ALTER TABLE processing_staff ADD COLUMN IF NOT EXISTS role_code VARCHAR(40) NOT NULL DEFAULT 'STORE_MANAGER';
+
 CREATE TABLE IF NOT EXISTS processing_order_locks (
   order_id INT PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
   processing_staff_id INT NOT NULL REFERENCES processing_staff(id),
   locked_until TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS route_crates (
+  id SERIAL PRIMARY KEY,
+  route_id INT NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+  crate_code VARCHAR(20) NOT NULL,
+  stop_from INT NOT NULL,
+  stop_to INT NOT NULL,
+  max_capacity INT NOT NULL DEFAULT 15,
+  current_orders INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  UNIQUE (route_id, crate_code)
+);
+
+CREATE TABLE IF NOT EXISTS order_allocations (
+  id SERIAL PRIMARY KEY,
+  business_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  order_id INT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  route_id INT REFERENCES routes(id),
+  product_id INT NOT NULL REFERENCES products(id),
+  required_qty NUMERIC(12,3) NOT NULL DEFAULT 0,
+  reserved_qty NUMERIC(12,3) NOT NULL DEFAULT 0,
+  used_qty NUMERIC(12,3) NOT NULL DEFAULT 0,
+  shortage_qty NUMERIC(12,3) NOT NULL DEFAULT 0,
+  status VARCHAR(20) NOT NULL DEFAULT 'RESERVED',
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  UNIQUE (business_date, order_id, product_id)
+);
+
+CREATE TABLE IF NOT EXISTS inventory_alerts (
+  id SERIAL PRIMARY KEY,
+  business_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  product_id INT REFERENCES products(id),
+  route_id INT REFERENCES routes(id),
+  alert_type VARCHAR(40) NOT NULL,
+  severity VARCHAR(20) NOT NULL DEFAULT 'HIGH',
+  message TEXT NOT NULL,
+  acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS print_logs (
+  id SERIAL PRIMARY KEY,
+  business_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  route_id INT REFERENCES routes(id),
+  order_id INT REFERENCES orders(id) ON DELETE CASCADE,
+  action_type VARCHAR(20) NOT NULL DEFAULT 'PRINT',
+  reason TEXT,
+  printed_by_processing_staff_id INT REFERENCES processing_staff(id),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS staff_activity (
+  id SERIAL PRIMARY KEY,
+  processing_staff_id INT REFERENCES processing_staff(id),
+  activity_type VARCHAR(40) NOT NULL,
+  order_id INT REFERENCES orders(id) ON DELETE SET NULL,
+  route_id INT REFERENCES routes(id) ON DELETE SET NULL,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS goods_received (
+  id SERIAL PRIMARY KEY,
+  supplier_name VARCHAR(160) NOT NULL,
+  invoice_number VARCHAR(80) NOT NULL,
+  image_url TEXT,
+  total_cost NUMERIC(12,2) NOT NULL DEFAULT 0,
+  status VARCHAR(30) NOT NULL DEFAULT 'AWAITING_QUALITY_CHECK',
+  received_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  received_by_processing_staff_id INT REFERENCES processing_staff(id),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  UNIQUE (invoice_number)
+);
+
+CREATE TABLE IF NOT EXISTS goods_received_items (
+  id SERIAL PRIMARY KEY,
+  goods_received_id INT NOT NULL REFERENCES goods_received(id) ON DELETE CASCADE,
+  product_id INT NOT NULL REFERENCES products(id),
+  quantity_received NUMERIC(12,3) NOT NULL DEFAULT 0,
+  rate_per_kg NUMERIC(12,2) NOT NULL DEFAULT 0,
+  total_cost NUMERIC(12,2) NOT NULL DEFAULT 0,
+  quality_status VARCHAR(30) NOT NULL DEFAULT 'AWAITING_QUALITY_CHECK',
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS quality_checks (
+  id SERIAL PRIMARY KEY,
+  goods_received_item_id INT NOT NULL REFERENCES goods_received_items(id) ON DELETE CASCADE,
+  product_id INT NOT NULL REFERENCES products(id),
+  good_quantity NUMERIC(12,3) NOT NULL DEFAULT 0,
+  damaged_quantity NUMERIC(12,3) NOT NULL DEFAULT 0,
+  waste_quantity NUMERIC(12,3) NOT NULL DEFAULT 0,
+  damage_reason TEXT,
+  approved_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  approved_by_processing_staff_id INT REFERENCES processing_staff(id),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -482,6 +599,9 @@ CREATE TABLE IF NOT EXISTS delivery_route_assignments (
   status delivery_route_status NOT NULL DEFAULT 'ASSIGNED',
   route_start_time TIMESTAMP,
   route_end_time TIMESTAMP,
+  cash_handover_confirmed_at TIMESTAMP,
+  cash_handover_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+  cash_handover_notes TEXT,
   assigned_by INT REFERENCES admin_users(id),
   created_at TIMESTAMP NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
@@ -489,6 +609,10 @@ CREATE TABLE IF NOT EXISTS delivery_route_assignments (
   UNIQUE (business_date, route_id),
   UNIQUE (business_date, delivery_executive_id)
 );
+
+ALTER TABLE delivery_route_assignments ADD COLUMN IF NOT EXISTS cash_handover_confirmed_at TIMESTAMP;
+ALTER TABLE delivery_route_assignments ADD COLUMN IF NOT EXISTS cash_handover_amount NUMERIC(12,2) NOT NULL DEFAULT 0;
+ALTER TABLE delivery_route_assignments ADD COLUMN IF NOT EXISTS cash_handover_notes TEXT;
 
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivered_by INT;
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS failure_reason TEXT;
@@ -523,8 +647,41 @@ USING dedupe x
 WHERE d.id = x.id
   AND x.rn > 1;
 
+CREATE INDEX IF NOT EXISTS idx_orders_created_at
+  ON orders (created_at);
+
 CREATE INDEX IF NOT EXISTS idx_orders_route_created_at
-  ON orders (route_id, created_at DESC);
+  ON orders (route_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_orders_sector_created_at
+  ON orders (sector_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_orders_building_created_at
+  ON orders (building_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_orders_route_stop
+  ON orders (route_id, stop_number);
+
+CREATE INDEX IF NOT EXISTS idx_route_crates_route_id
+  ON route_crates (route_id);
+
+CREATE INDEX IF NOT EXISTS idx_processing_order_locks_order_locked_until
+  ON processing_order_locks (order_id, locked_until);
+
+CREATE INDEX IF NOT EXISTS idx_order_allocations_business_order
+  ON order_allocations (business_date, order_id);
+
+CREATE INDEX IF NOT EXISTS idx_order_allocations_product_business
+  ON order_allocations (product_id, business_date);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_stock_date_product
+  ON inventory (stock_date, product_id);
+
+CREATE INDEX IF NOT EXISTS idx_packing_log_order_packed_at
+  ON packing_log (order_id, packed_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_route_buildings_route_sequence
+  ON route_buildings (route_id, stop_sequence);
 
 CREATE INDEX IF NOT EXISTS idx_orders_route_created_date
   ON orders (route_id, (DATE(created_at)));
@@ -543,6 +700,9 @@ CREATE INDEX IF NOT EXISTS idx_delivery_assignments_exec_date
 
 CREATE INDEX IF NOT EXISTS idx_delivery_assignments_route_date_exec
   ON delivery_route_assignments (route_id, business_date, delivery_executive_id);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_assignments_date_status
+  ON delivery_route_assignments (business_date, status);
 
 CREATE INDEX IF NOT EXISTS idx_delivery_log_order_created_at
   ON delivery_log (order_id, created_at DESC);

@@ -50,6 +50,16 @@ class RouteRepository {
     );
   }
 
+  Future<void> confirmCashHandover(int routeId, {String? notes}) async {
+    await ApiClient.dio.post(
+      '/delivery/cash-handover',
+      data: {
+        'route_id': routeId,
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> getDailySummary() async {
     final res = await ApiClient.dio.get('/delivery/daily-summary');
     return (res.data['data'] ?? {}) as Map<String, dynamic>;
